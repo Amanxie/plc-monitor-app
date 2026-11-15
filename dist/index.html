@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PLC 监控 App · 下载与更新</title>
+<style>
+  :root{
+    --bg:#0d1114; --card:#151b20; --line:#232c33; --text:#d9e0e4;
+    --sub:#8b969e; --dim:#5a666e; --accent:#b6f21a; --accent-text:#0d1114;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:760px; margin:0 auto; padding:36px 20px 60px}
+  header{display:flex; align-items:center; gap:12px; margin-bottom:6px}
+  .logo{
+    width:38px;height:38px;border-radius:9px;flex:none;
+    background:linear-gradient(135deg,#b6f21a,#4f8c00);
+    display:flex;align-items:center;justify-content:center;
+    color:#0d1114;font-weight:800;font-size:17px;
+  }
+  h1{font-size:20px;margin:0;font-weight:700;letter-spacing:.3px}
+  .tagline{color:var(--dim);font-size:12px;margin:2px 0 26px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:16px}
+  .ver{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .ver b{font-size:22px;font-weight:700}
+  .ver span{color:var(--sub);font-size:12px}
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:8px;
+    background:var(--accent);color:var(--accent-text);text-decoration:none;
+    font-weight:700;font-size:15px;padding:13px 22px;border-radius:7px;margin-top:14px;
+  }
+  .btn:active{opacity:.86}
+  .btn.ghost{background:transparent;color:var(--sub);border:1px solid var(--line);font-weight:400;font-size:13px;padding:10px 16px}
+  .meta{color:var(--dim);font-size:12px;margin-top:10px}
+  h2{font-size:12px;color:var(--dim);letter-spacing:1.2px;font-weight:600;margin:26px 0 10px}
+  ul{margin:0;padding-left:18px;color:var(--sub)}
+  li{margin:5px 0}
+  .step{color:var(--sub);font-size:13px;margin:7px 0}
+  .step b{color:var(--text);font-weight:600}
+  code{background:#0b0f12;border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:12px;color:#9fd3ff}
+  .warn{color:#e0b341}
+  footer{margin-top:34px;color:#3d474e;font-size:11.5px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">P</div>
+    <div>
+      <h1>PLC 监控 App</h1>
+      <div class="tagline">西门子 S7 / Modbus TCP · 点动操作与状态监控 · by 谢工爱搞自动化</div>
+    </div>
+  </header>
+
+  <div class="card">
+    <div class="ver">
+      <b id="ver">—</b>
+      <span id="date"></span>
+    </div>
+    <div class="meta" id="meta">正在读取版本信息…</div>
+    <a class="btn" id="dl" href="#">下载安装包</a>
+    <a class="btn ghost" href="version.json" target="_blank">版本信息 JSON</a>
+  </div>
+
+  <h2>本次更新</h2>
+  <div class="card"><ul id="notes"><li>—</li></ul></div>
+
+  <h2>安装步骤</h2>
+  <div class="card">
+    <div class="step"><b>①</b> 点上方「下载安装包」，等浏览器下载完成（约 50 MB）。</div>
+    <div class="step"><b>②</b> 打开下载的 APK，系统提示“禁止安装未知应用”时，点【设置】→ 允许本浏览器/文件管理安装。</div>
+    <div class="step"><b>③</b> 返回继续安装。覆盖安装不会清除已配置的设备、模板和授权。</div>
+    <div class="step warn"><b>注意</b>：必须用同一个安装包签名覆盖，否则会提示“应用未安装”。遇到此情况先卸载旧版再装（配置会丢，先在模板库导出配置）。</div>
+  </div>
+
+  <h2>App 内更新</h2>
+  <div class="card">
+    <div class="step">App 首页右上角的刷新图标 →「检查更新」，会自动比对线上版本；也可以在设备页启动时自动提示。</div>
+    <div class="step">接口地址：<code id="api">/version.json</code></div>
+  </div>
+
+  <footer id="foot">谢工爱搞自动化 · PLC 监控 App</footer>
+</div>
+
+<script>
+fetch('version.json?t=' + Date.now())
+  .then(function (r) { return r.json(); })
+  .then(function (v) {
+    document.getElementById('ver').textContent = 'v' + v.version;
+    document.getElementById('date').textContent = v.releasedAt ? '发布于 ' + v.releasedAt : '';
+    var mb = v.size ? (v.size / 1048576).toFixed(1) + ' MB' : '';
+    document.getElementById('meta').textContent =
+      '构建号 ' + v.build + (mb ? ' · ' + mb : '') +
+      (v.sha256 ? ' · SHA256 ' + v.sha256.slice(0, 12) + '…' : '');
+    var dl = document.getElementById('dl');
+    dl.href = v.apk;
+    dl.textContent = '下载安装包 v' + v.version;
+    var ul = document.getElementById('notes');
+    ul.innerHTML = '';
+    (v.notes || []).forEach(function (n) {
+      var li = document.createElement('li');
+      li.textContent = n;
+      ul.appendChild(li);
+    });
+    document.getElementById('api').textContent = location.origin + '/version.json';
+    document.getElementById('foot').textContent += ' · v' + v.version;
+  })
+  .catch(function () {
+    document.getElementById('meta').textContent = '版本信息读取失败，请刷新页面重试';
+  });
+</script>
+</body>
+</html>
