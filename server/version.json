@@ -1,16 +1,16 @@
 {
-  "version": "1.7.3",
-  "build": 13,
+  "version": "1.8.0",
+  "build": 14,
   "releasedAt": "2026-11-15",
-  "apk": "releases/plc-monitor-v1.7.3.apk",
-  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.7.3/plc-monitor-v1.7.3.apk",
-  "size": 52686093,
-  "sha256": "3b5d646f27509d9122c45e6cabfb8ec2411dab3de997f64aa45d55ed403e647c",
+  "apk": "releases/plc-monitor-v1.8.0.apk",
+  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.8.0/plc-monitor-v1.8.0.apk",
+  "size": 52768153,
+  "sha256": "0ea930b34567ba2cecf29fe4534b30e787bc61cf45d1bed35e13fa1ae52546df",
   "force": false,
   "notes": [
-    "更新服务器迁到 Render（plc-monitor-xie.onrender.com），没绑域名的占位地址已替换",
-    "APK 由 Render CDN 分发，国内下载比直连 GitHub Release 稳",
-    "下载完成后自动校验文件大小，异常时提示重试",
-    "其余功能与 1.7.2 一致：编辑已有案例免重选模板、监控页读/写分区、设备删除"
+    "更新时段限制：每天 10:00–12:00、14:00–16:00、21:00–23:00（北京时间），其余时段不检查不下载",
+    "编辑点位可新增「按钮控件」和「状态控件」：状态显示只读、输入域可写 0/1 或数值，随时可切换",
+    "未连接也能进监控画面：全部按钮灰色不可操作；点断开连接留在当前页，画面整体置灰",
+    "下载与安装流程同 1.7.x，更新服务 plc-monitor-xie.onrender.com"
   ]
 }

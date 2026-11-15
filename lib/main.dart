@@ -12,8 +12,8 @@ import 'config_io.dart';
 import 'update.dart';
 
 /// 软件版本（底部展示，同时写入构建号）
-const kAppVersion = '1.7.3';
-const kAppBuild = '13';
+const kAppVersion = '1.8.0';
+const kAppBuild = '14';
 const kBrand = '谢工爱搞自动化';
 
 Future<void> main() async {
@@ -331,9 +331,11 @@ class _HomeScreenState extends State<HomeScreen> {
     _autoCheckUpdate();
   }
 
-  /// 启动后静默检查一次更新（6 小时内不重复打服务器），有新版才弹提示
+  /// 启动后静默检查一次更新（仅在允许的更新时段内，6 小时内不重复打服务器）
   Future<void> _autoCheckUpdate() async {
     try {
+      // 更新时段限制：北京时间 10-12 / 14-16 / 21-23，其余时段一律不查
+      if (!UpdateService.inWindow()) return;
       if (!await UpdateService.shouldAutoCheck()) return;
       final res = await UpdateService.check();
       if (!mounted || !res.hasUpdate) return;
@@ -814,7 +816,8 @@ class _WizardScreenState extends State<WizardScreen> {
       );
     }
     final pts = selected!.points.where((p) => p.type != PointType.image).toList();
-    final inputs = pts.where((p) => !p.isOutput).toList();
+    final statusPts = pts.where((p) => p.isStatusOnly).toList();
+    final fieldPts = pts.where((p) => p.isInputField).toList();
     final outputs = pts.where((p) => p.isOutput).toList();
     return ListView(
       padding: const EdgeInsets.all(20),
@@ -834,14 +837,176 @@ class _WizardScreenState extends State<WizardScreen> {
             ),
         ]),
         const SizedBox(height: 6),
-        Text('${selected!.name} · ${pts.length} 个点位 · 先选区域与类型，再在方框里填编号',
+        Text('${selected!.name} · ${pts.length} 个控件 · 先选控件性质，再填变量地址',
             style: const TextStyle(fontSize: 12, color: cSub)),
         const SizedBox(height: 16),
-        _addrGroup('输入信号 · 状态显示（BOOL 可在操作栏写入 0/1）', inputs),
+        _addrGroup('状态显示 · 只读，用户不能操作', statusPts),
         const SizedBox(height: 14),
-        _addrGroup('输出按钮 · 按下运行 松开停止', outputs),
+        _addrGroup('输入域 · 用户可写 0/1 或数值', fieldPts),
+        const SizedBox(height: 14),
+        _addrGroup('点动按钮 · 按下置 1，松开置 0', outputs),
+        const SizedBox(height: 4),
+        Row(children: [
+          Expanded(
+            child: _addCtrlBtn('+ 按钮控件', Icons.touch_app_outlined,
+                () => _showPointEditor(presetButton: true)),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _addCtrlBtn('+ 状态控件', Icons.circle_outlined,
+                () => _showPointEditor(presetButton: false)),
+          ),
+        ]),
       ],
     );
+  }
+
+  Widget _addCtrlBtn(String label, IconData icon, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        height: 44,
+        decoration: BoxDecoration(
+            color: const Color(0xFF161A1D),
+            border: Border.all(color: const Color(0xFF333B40))),
+        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Icon(icon, size: 15, color: cSub),
+          const SizedBox(width: 6),
+          Text(label, style: const TextStyle(fontSize: 12, color: cSub)),
+        ]),
+      ),
+    );
+  }
+
+  /// 新增 / 编辑一个控件：先定性质（状态显示 / 输入域 / 点动按钮），再填名称、类型、地址
+  Future<void> _showPointEditor({PointItem? existing, bool presetButton = false}) async {
+    if (selected == null) return;
+    final isNew = existing == null;
+    final p = existing ??
+        PointItem(
+          id: 'c_${DateTime.now().millisecondsSinceEpoch}',
+          name: presetButton ? '新按钮' : '新状态',
+          address: presetButton ? 'Q0.0' : 'I0.0',
+          type: presetButton ? PointType.output : PointType.input,
+          writable: presetButton,
+        );
+    final nameC = TextEditingController(text: isNew ? '' : p.name);
+    var dtype = typeSel[p.id] ?? p.dataType;
+    var addr = addrText[p.id] ?? p.address;
+    var isOut = p.isOutput;
+    var writable = p.writable;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setD) {
+        final role = isOut ? '点动按钮' : (writable ? '输入域' : '状态显示');
+        return AlertDialog(
+          backgroundColor: cCard,
+          title: Text(isNew ? '新增控件' : '编辑控件',
+              style: const TextStyle(fontSize: 16, color: cText)),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              TextField(
+                controller: nameC,
+                autofocus: isNew,
+                style: const TextStyle(fontSize: 14, color: cText),
+                decoration: const InputDecoration(
+                    labelText: '显示名称（如：一层到位 / 上升按钮）',
+                    labelStyle: TextStyle(fontSize: 11, color: cDim)),
+              ),
+              const SizedBox(height: 14),
+              const Text('控件性质', style: TextStyle(fontSize: 11, color: cDim)),
+              const SizedBox(height: 6),
+              Wrap(spacing: 7, runSpacing: 7, children: [
+                ChoiceChip(
+                  label: const Text('状态显示', style: TextStyle(fontSize: 11.5)),
+                  selected: !isOut && !writable,
+                  onSelected: (_) => setD(() { isOut = false; writable = false; }),
+                  selectedColor: cAccent, backgroundColor: cCardDark,
+                  labelStyle: TextStyle(color: (!isOut && !writable) ? cAccentText : cSub),
+                ),
+                ChoiceChip(
+                  label: const Text('输入域', style: TextStyle(fontSize: 11.5)),
+                  selected: !isOut && writable,
+                  onSelected: (_) => setD(() { isOut = false; writable = true; }),
+                  selectedColor: cAccent, backgroundColor: cCardDark,
+                  labelStyle: TextStyle(color: (!isOut && writable) ? cAccentText : cSub),
+                ),
+                ChoiceChip(
+                  label: const Text('点动按钮', style: TextStyle(fontSize: 11.5)),
+                  selected: isOut,
+                  onSelected: (_) => setD(() { isOut = true; writable = true; }),
+                  selectedColor: cAccent, backgroundColor: cCardDark,
+                  labelStyle: TextStyle(color: isOut ? cAccentText : cSub),
+                ),
+              ]),
+              const SizedBox(height: 8),
+              Text(
+                  isOut
+                      ? '点动按钮：按住置 1，松开置 0（只能是 BOOL）'
+                      : (writable
+                          ? '输入域：用户在监控页可写入 0/1 或数值'
+                          : '状态显示：只显示实时值，监控页不提供任何操作'),
+                  style: const TextStyle(fontSize: 10, color: cDim)),
+              const SizedBox(height: 14),
+              Row(children: [
+                const Text('变量类型', style: TextStyle(fontSize: 11, color: cDim)),
+                const Spacer(),
+                _TypeButton(
+                  value: dtype,
+                  width: 78,
+                  onChanged: (t) => setD(() {
+                    dtype = t;
+                    addr = addrFromText(addr, t);
+                    if (isOut && !t.isBit) { isOut = false; writable = true; }
+                  }),
+                ),
+              ]),
+              const SizedBox(height: 8),
+              AddressField(
+                key: ValueKey('wiz_${p.id}_${dtype.name}'),
+                initial: addr,
+                type: dtype,
+                onChanged: (a) => addr = a,
+              ),
+              const SizedBox(height: 6),
+              Text('当前性质：$role', style: const TextStyle(fontSize: 10, color: cAccent)),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消', style: TextStyle(color: cDim))),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(backgroundColor: cAccent, foregroundColor: cAccentText),
+              child: Text(isNew ? '添加' : '确定'),
+            ),
+          ],
+        );
+      }),
+    );
+
+    if (ok != true) return;
+    final nm = nameC.text.trim();
+    setState(() {
+      if (isNew) {
+        p.name = nm.isEmpty ? (isOut ? '新按钮' : '新状态') : nm;
+        p.type = isOut ? PointType.output : PointType.input;
+        p.writable = isOut ? true : writable;
+        p.dataType = dtype;
+        p.address = addr;
+        selected!.points.add(p);
+      } else {
+        if (nm.isNotEmpty) p.name = nm;
+        p.type = isOut ? PointType.output : PointType.input;
+        p.writable = isOut ? true : writable;
+        p.dataType = dtype;
+        p.address = addr;
+      }
+      addrText[p.id] = addr;
+      typeSel[p.id] = dtype;
+      cmtText.putIfAbsent(p.id, () => p.comment);
+    });
   }
 
   /// 编辑模式下更换模板：地址能对上的沿用，对不上的用新模板默认地址
@@ -932,6 +1097,19 @@ class _WizardScreenState extends State<WizardScreen> {
                     style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
                         color: Color(0xFFD9E0E4)))),
                 const SizedBox(width: 6),
+                InkWell(
+                  onTap: () => _showPointEditor(existing: p),
+                  child: Container(
+                    margin: const EdgeInsets.only(right: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                    decoration: BoxDecoration(
+                        border: Border.all(color: p.isOutput ? cAccent : cLine),
+                        borderRadius: BorderRadius.circular(3)),
+                    child: Text(p.roleLabel,
+                        style: TextStyle(fontSize: 9.5,
+                            color: p.isOutput ? cAccent : cSub)),
+                  ),
+                ),
                 _TypeButton(
                   value: t,
                   width: 74,
@@ -1226,17 +1404,18 @@ class _MonitorScreenState extends State<MonitorScreen> {
     }
     final s = CommManager.instance.st(d!.id);
     final visible = tpl!.points.where((p) => p.visible).toList();
-    // 状态信号栏：输入点位，只读显示
+    // 状态信号栏：所有输入点位都显示（只读）
     final inputs = visible.where((p) => p.type == PointType.input).toList();
     // 操作栏·点动：按钮属性（输出）且 BOOL —— 按下置 1、松开置 0
     final jogs = visible
         .where((p) => p.type == PointType.output && p.dataType.isBit)
         .toList();
-    // 操作栏·写入：非按钮的 BOOL 输入域（自行写 0/1）+ 所有数值类型点位
+    // 操作栏·写入：定义为「输入域」的点（可操作）+ 数值点位
     final writes = visible
         .where((p) =>
-            (p.type == PointType.input && p.dataType.isBit) ||
-            p.dataType.isNumeric)
+            p.writable &&
+            (p.type == PointType.input ||
+                (p.type == PointType.output && p.dataType.isNumeric)))
         .toList();
     final connected = s.state == ConnState.connected;
 
@@ -1286,7 +1465,9 @@ class _MonitorScreenState extends State<MonitorScreen> {
                   ),
                 ),
               ),
-            if (connected) ...[
+            // 未连接时不再替换整个画面，只在顶部提示 + 全控件置灰
+            if (!connected) _offlineBanner(s),
+            ...[
               if (inputs.isNotEmpty) ...[
                 const Text('状态信号 · 只读显示，实时刷新',
                     style: TextStyle(fontSize: 11, color: cDim, letterSpacing: 1)),
@@ -1347,7 +1528,8 @@ class _MonitorScreenState extends State<MonitorScreen> {
                   crossAxisCount: 2, shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
                   mainAxisSpacing: 8, crossAxisSpacing: 8, childAspectRatio: 2.8,
-                  children: jogs.map((p) => JogButton(device: d!, point: p)).toList(),
+                  children: jogs.map((p) =>
+                      JogButton(device: d!, point: p, enabled: connected)).toList(),
                 ),
                 const SizedBox(height: 16),
               ],
@@ -1359,13 +1541,13 @@ class _MonitorScreenState extends State<MonitorScreen> {
                       device: d!,
                       point: p,
                       current: s.values[p.id],
+                      enabled: connected,
                     )),
                 const SizedBox(height: 2),
                 const Text('提示：I 区是过程映像输入，多数 PLC 不允许写入；M / DB 区可写。',
                     style: TextStyle(fontSize: 9.5, color: cDim)),
               ],
-            ] else
-              _buildConnectPanel(s),
+            ],
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(12),
@@ -1387,42 +1569,57 @@ class _MonitorScreenState extends State<MonitorScreen> {
     );
   }
 
-  Widget _buildConnectPanel(DeviceStatus s) {
+  /// 未连接时的顶部提示条：画面照常显示，但所有控件置灰不可操作，这里给连接入口
+  Widget _offlineBanner(DeviceStatus s) {
     final failed = s.state == ConnState.error;
+    final busy = s.state == ConnState.connecting || connecting;
     return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: _box(cCard),
-      child: Column(children: [
-        Icon(failed ? Icons.link_off : Icons.link,
-            size: 36, color: failed ? cRed : cDim),
-        const SizedBox(height: 10),
-        Text(s.state == ConnState.connecting ? '正在连接 ${d!.ip} …' : s.message,
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 13, color: cSub)),
-        const SizedBox(height: 6),
-        Text('当前地址 ${d!.ip}:${d!.port} · 机架 ${d!.rack} / 槽位 ${d!.slot}',
-            style: const TextStyle(fontSize: 10, color: cDim)),
-        const SizedBox(height: 16),
-        ElevatedButton(
-          style: ElevatedButton.styleFrom(
-              backgroundColor: cAccent, foregroundColor: cAccentText,
-              minimumSize: const Size(200, 46),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))),
-          onPressed: connecting ? null : () async {
-            setState(() => connecting = true);
-            await CommManager.instance.connect(d!);
-            if (mounted) setState(() => connecting = false);
-          },
-          child: Text(failed ? '重新连接' : '连接设备',
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-        ),
-        const SizedBox(height: 10),
-        TextButton.icon(
-          onPressed: connecting ? null : _scanAndApply,
-          icon: const Icon(Icons.radar, size: 16, color: cData),
-          label: const Text('连不上？自动扫描同网段的 PLC',
-              style: TextStyle(fontSize: 12, color: cData)),
-        ),
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+      decoration: _box(cCard, borderColor: failed ? const Color(0xFF4A2A2A) : cLine),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(Icons.link_off, size: 15, color: failed ? cRed : cDim),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              failed
+                  ? s.message
+                  : (busy ? '正在连接 ${d!.ip} …' : '未连接 · 画面只读，按钮与写入已置灰'),
+              style: TextStyle(fontSize: 12, color: failed ? cRed : cSub),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 2),
+        Text('${d!.ip}:${d!.port} · 机架 ${d!.rack} / 槽位 ${d!.slot}',
+            style: const TextStyle(fontSize: 9.5, color: cDim)),
+        const SizedBox(height: 8),
+        Row(children: [
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: cAccent, foregroundColor: cAccentText,
+                minimumSize: const Size(120, 36),
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))),
+            onPressed: busy ? null : () async {
+              setState(() => connecting = true);
+              await CommManager.instance.connect(d!);
+              if (mounted) setState(() => connecting = false);
+            },
+            child: Text(busy ? '连接中…' : (failed ? '重新连接' : '连接设备'),
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          ),
+          const SizedBox(width: 6),
+          TextButton.icon(
+            onPressed: busy ? null : _scanAndApply,
+            style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(0, 36)),
+            icon: const Icon(Icons.radar, size: 14, color: cData),
+            label: const Text('扫描同网段 PLC',
+                style: TextStyle(fontSize: 11, color: cData)),
+          ),
+        ]),
       ]),
     );
   }
@@ -1462,7 +1659,9 @@ class _MonitorScreenState extends State<MonitorScreen> {
 class JogButton extends StatefulWidget {
   final Device device;
   final PointItem point;
-  const JogButton({super.key, required this.device, required this.point});
+  /// false = 未连接：按钮置灰、完全不响应触摸
+  final bool enabled;
+  const JogButton({super.key, required this.device, required this.point, this.enabled = true});
   @override
   State<JogButton> createState() => _JogButtonState();
 }
@@ -1487,33 +1686,44 @@ class _JogButtonState extends State<JogButton> {
   @override
   Widget build(BuildContext context) {
     final addr = AppStore.instance.addrOf(widget.device, widget.point);
+    final on = widget.enabled;
     return GestureDetector(
-      // 点动语义：按下即写 1，松开（含手指移出/取消）立即写 0
-      onTapDown: (_) { setState(() => pressed = true); _set(true); },
-      onTapUp: (_) { setState(() => pressed = false); _set(false); },
-      onTapCancel: () { setState(() => pressed = false); _set(false); },
+      // 点动语义：按下即写 1，松开（含手指移出/取消）立即写 0；未连接直接忽略
+      onTapDown: on ? (_) { setState(() => pressed = true); _set(true); } : null,
+      onTapUp: on ? (_) { setState(() => pressed = false); _set(false); } : null,
+      onTapCancel: on ? () { setState(() => pressed = false); _set(false); } : null,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 120),
         decoration: BoxDecoration(
-          color: active ? const Color(0xFF1A3A22) : (pressed ? const Color(0xFF22281C) : cCard),
+          color: !on
+              ? const Color(0xFF141719)
+              : (active ? const Color(0xFF1A3A22) : (pressed ? const Color(0xFF22281C) : cCard)),
           border: Border.all(
-              color: active ? cGreen : (pressed ? cAccent : cLine), width: active || pressed ? 1.5 : 1),
+              color: !on
+                  ? const Color(0xFF262C30)
+                  : (active ? cGreen : (pressed ? cAccent : cLine)),
+              width: on && (active || pressed) ? 1.5 : 1),
           borderRadius: BorderRadius.circular(6),
         ),
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
           Text(widget.point.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: cText)),
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                  color: on ? cText : const Color(0xFF4A5359))),
           const SizedBox(height: 2),
           Text(
-            active
-                ? '输出中'
-                : _addrLine(addr, widget.point.dataType,
-                    AppStore.instance.commentOf(widget.point, deviceAddress: addr)),
+            !on
+                ? '未连接'
+                : (active
+                    ? '输出中'
+                    : _addrLine(addr, widget.point.dataType,
+                        AppStore.instance.commentOf(widget.point, deviceAddress: addr))),
             maxLines: 1, overflow: TextOverflow.ellipsis,
             style: TextStyle(
                 fontSize: 9,
                 fontFamily: 'monospace',
-                color: active ? cGreen : const Color(0xFF7C878E)),
+                color: !on
+                    ? const Color(0xFF3D464C)
+                    : (active ? cGreen : const Color(0xFF7C878E))),
           ),
         ]),
       ),
@@ -1530,7 +1740,9 @@ class WriteTile extends StatefulWidget {
   final Device device;
   final PointItem point;
   final Object? current;
-  const WriteTile({super.key, required this.device, required this.point, this.current});
+  /// false = 未连接：写入按钮全部置灰不可点
+  final bool enabled;
+  const WriteTile({super.key, required this.device, required this.point, this.current, this.enabled = true});
   @override
   State<WriteTile> createState() => _WriteTileState();
 }
@@ -1548,7 +1760,7 @@ class _WriteTileState extends State<WriteTile> {
   }
 
   Future<void> _writeBool(bool v) async {
-    if (busy) return;
+    if (busy || !widget.enabled) return;
     setState(() => busy = true);
     final ok = await CommManager.instance.writeBit(widget.device, widget.point, v);
     if (!mounted) return;
@@ -1562,6 +1774,7 @@ class _WriteTileState extends State<WriteTile> {
   }
 
   Future<void> _writeNum() async {
+    if (!widget.enabled) return;
     final p = widget.point;
     final ctrl = TextEditingController(
         text: widget.current == null ? '' : formatVarValue(p.dataType, widget.current));
@@ -1627,18 +1840,23 @@ class _WriteTileState extends State<WriteTile> {
   }
 
   Widget _bitBtn(String label, bool v) {
-    final p = widget.point;
-    final sel = widget.current == v;
+    final enabled = widget.enabled && !busy;
+    final sel = widget.enabled && widget.current == v;
     return InkWell(
-      onTap: busy ? null : () => _writeBool(v),
+      onTap: enabled ? () => _writeBool(v) : null,
       borderRadius: BorderRadius.circular(4),
       child: Container(
         width: 34, height: 28, alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: sel
-              ? (v ? const Color(0xFF1A3A22) : const Color(0xFF2A2F33))
-              : cCardDark,
-          border: Border.all(color: sel ? (v ? cGreen : cSub) : cLine),
+          color: !widget.enabled
+              ? const Color(0xFF141719)
+              : (sel
+                  ? (v ? const Color(0xFF1A3A22) : const Color(0xFF2A2F33))
+                  : cCardDark),
+          border: Border.all(
+              color: !widget.enabled
+                  ? const Color(0xFF262C30)
+                  : (sel ? (v ? cGreen : cSub) : cLine)),
           borderRadius: BorderRadius.circular(4),
         ),
         child: Text(label,
@@ -1646,7 +1864,9 @@ class _WriteTileState extends State<WriteTile> {
                 fontSize: 12,
                 fontWeight: FontWeight.bold,
                 fontFamily: 'monospace',
-                color: sel ? (v ? cGreen : cText) : cSub)),
+                color: !widget.enabled
+                    ? const Color(0xFF3D464C)
+                    : (sel ? (v ? cGreen : cText) : cSub))),
       ),
     );
   }
@@ -1656,10 +1876,12 @@ class _WriteTileState extends State<WriteTile> {
     final p = widget.point;
     final addr = AppStore.instance.addrOf(widget.device, p);
     final isBit = p.dataType.isBit;
-    final on = isBit && widget.current == true;
-    final txt = isBit
-        ? (on ? 'ON' : 'OFF')
-        : formatVarValue(p.dataType, widget.current);
+    final on = widget.enabled && isBit && widget.current == true;
+    final txt = !widget.enabled
+        ? '--'
+        : (isBit
+            ? (on ? 'ON' : 'OFF')
+            : formatVarValue(p.dataType, widget.current));
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.fromLTRB(12, 8, 10, 8),
@@ -1687,8 +1909,9 @@ class _WriteTileState extends State<WriteTile> {
         const SizedBox(width: 8),
         if (!isBit)
           Text(txt,
-              style: const TextStyle(
-                  fontSize: 12, fontFamily: 'monospace', color: cData)),
+              style: TextStyle(
+                  fontSize: 12, fontFamily: 'monospace',
+                  color: widget.enabled ? cData : const Color(0xFF3D464C))),
         const SizedBox(width: 8),
         if (isBit) ...[
           _bitBtn('0', false),
@@ -1696,16 +1919,18 @@ class _WriteTileState extends State<WriteTile> {
           _bitBtn('1', true),
         ] else
           TextButton(
-            onPressed: busy ? null : _writeNum,
+            onPressed: (!widget.enabled || busy) ? null : _writeNum,
             style: TextButton.styleFrom(
                 minimumSize: const Size(48, 28),
                 padding: const EdgeInsets.symmetric(horizontal: 10),
-                backgroundColor: cCardDark,
+                backgroundColor: widget.enabled ? cCardDark : const Color(0xFF141719),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(4),
-                    side: const BorderSide(color: cLine))),
-            child: const Text('写入',
-                style: TextStyle(fontSize: 12, color: cAccent)),
+                    side: BorderSide(
+                        color: widget.enabled ? cLine : const Color(0xFF262C30)))),
+            child: Text('写入',
+                style: TextStyle(fontSize: 12,
+                    color: widget.enabled ? cAccent : const Color(0xFF3D464C))),
           ),
       ]),
     );
@@ -1895,7 +2120,7 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
               Text(
                   '${p.address} · ${p.dataType.label}'
                   '${AppStore.instance.commentOf(p).isEmpty ? '' : ' · ${AppStore.instance.commentOf(p)}'}'
-                  ' · ${p.isOutput ? "按钮(长按点动)" : "指示灯"}',
+                  ' · ${p.roleLabel}',
                   maxLines: 1, overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 10, color: cDim)),
             ]),
@@ -1919,6 +2144,7 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
     final nameC = TextEditingController(text: p.name);
     final cmtC = TextEditingController(text: p.comment);
     bool isOut = p.isOutput;
+    bool writable = p.writable;
     VarType dtype = p.dataType;
     String addr = p.address;
     final ok = await showDialog<bool>(
@@ -1962,12 +2188,16 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
                     labelStyle: TextStyle(color: cDim))),
             const SizedBox(height: 12),
             Row(children: [
-              ChoiceChip(label: const Text('指示灯'), selected: !isOut,
-                  onSelected: (_) => setD(() => isOut = false),
+              ChoiceChip(label: const Text('状态显示'), selected: !isOut && !writable,
+                  onSelected: (_) => setD(() { isOut = false; writable = false; }),
                   selectedColor: cAccent, backgroundColor: cCardDark),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
+              ChoiceChip(label: const Text('输入域'), selected: !isOut && writable,
+                  onSelected: (_) => setD(() { isOut = false; writable = true; }),
+                  selectedColor: cAccent, backgroundColor: cCardDark),
+              const SizedBox(width: 6),
               ChoiceChip(label: const Text('点动按钮'), selected: isOut,
-                  onSelected: (_) => setD(() => isOut = true),
+                  onSelected: (_) => setD(() { isOut = true; writable = true; }),
                   selectedColor: cAccent, backgroundColor: cCardDark),
             ]),
           ]),
@@ -1987,6 +2217,7 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
         p.address = addr.trim();
         p.comment = cmtC.text.trim();
         p.type = isOut ? PointType.output : PointType.input;
+        p.writable = isOut ? true : writable;
         p.dataType = dtype;
       });
     }
@@ -3576,7 +3807,34 @@ class _SymbolImportScreenState extends State<SymbolImportScreen> {
 
 // ================== 软件更新 ==================
 
-Future<void> openUpdateSheet(BuildContext context, {ReleaseInfo? preset, bool auto = false}) {
+Future<void> openUpdateSheet(BuildContext context, {ReleaseInfo? preset, bool auto = false}) async {
+  // 更新时段限制：自动检查时段外直接不弹；手动点「检查更新」则明确告知何时可更新
+  if (!UpdateService.inWindow()) {
+    if (auto) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: cCard,
+        title: const Text('当前不在更新时段',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cText)),
+        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('为避免升级打断现场运行，App 只在以下时段检查与下载更新：',
+              style: TextStyle(fontSize: 12, color: cSub)),
+          const SizedBox(height: 8),
+          Text(UpdateService.windowLabel,
+              style: const TextStyle(fontSize: 12.5, color: cAccent, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          Text(UpdateService.nextWindowText(),
+              style: const TextStyle(fontSize: 11.5, color: cDim)),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx),
+              child: const Text('知道了', style: TextStyle(fontSize: 13, color: cAccent))),
+        ],
+      ),
+    );
+    return;
+  }
   return showModalBottomSheet<void>(
     context: context,
     backgroundColor: cCard,
@@ -3726,6 +3984,9 @@ class _UpdateSheetState extends State<_UpdateSheet> {
             const SizedBox(height: 16),
             ..._body(r),
             const SizedBox(height: 14),
+            Text('更新时段：${UpdateService.windowLabel}',
+                style: const TextStyle(fontSize: 10, color: cDim)),
+            const SizedBox(height: 3),
             Text('更新服务：$kUpdateBaseUrl',
                 style: const TextStyle(fontSize: 10, color: cDim)),
           ]),

@@ -189,13 +189,20 @@ String formatFloat(double v, int sig) {
 }
 
 /// 点位（模板里的一个信号/按钮）
+///
+/// 控件按「用户能不能操作」分三种：
+///   · 状态显示：type=input + writable=false —— 只显示，不给操作
+///   · 输入域： type=input + writable=true  —— 用户可写 0/1 或数值
+///   · 点动按钮：type=output                —— 按下置 1、松开置 0
 class PointItem {
   String id;
   String name;      // 显示名：如 一层到位
   String address;   // 原始地址：I0.0 / Q0.1 / M10.0 / MW10 / DB1.DBX0.0
-  PointType type;   // 输入（只读指示） / 输出（点动按钮）
+  PointType type;   // 输入（状态/输入域） / 输出（点动按钮）
   VarType dataType; // 变量数据类型
   bool visible;
+  /// 是否允许用户操作：false = 状态显示（只读），true = 输入域（可写）
+  bool writable;
   /// 变量注释（对应博图变量表里的注释列）。留空时自动取符号表里同地址的注释。
   String comment;
 
@@ -206,10 +213,20 @@ class PointItem {
     required this.type,
     this.dataType = VarType.boolean,
     this.visible = true,
+    this.writable = true,
     this.comment = '',
   });
 
   bool get isOutput => type == PointType.output;
+
+  /// 状态显示（只读，不可操作）
+  bool get isStatusOnly => type == PointType.input && !writable;
+
+  /// 输入域（用户可写）
+  bool get isInputField => type == PointType.input && writable;
+
+  /// 控件角色名，界面与编辑弹窗共用
+  String get roleLabel => isOutput ? '点动按钮' : (writable ? '输入域' : '状态显示');
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -218,6 +235,7 @@ class PointItem {
         'type': type.name,
         'dataType': dataType.name,
         'visible': visible,
+        'writable': writable,
         'comment': comment,
       };
 
@@ -232,6 +250,8 @@ class PointItem {
           orElse: () => VarType.boolean,
         ),
         visible: (j['visible'] as bool?) ?? true,
+        // 旧存档默认按「输入域」处理，保持 1.7.x 的既有行为不变
+        writable: (j['writable'] as bool?) ?? true,
         comment: (j['comment'] as String?) ?? '',
       );
 }

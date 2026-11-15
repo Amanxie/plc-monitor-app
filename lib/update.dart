@@ -52,6 +52,37 @@ class UpdateCheck {
 class UpdateService {
   static const MethodChannel _ch = MethodChannel('plc/fileio');
 
+  /// 更新时段（北京时间，闭开区间）：10–12、14–16、21–23，每天共 6 小时。
+  /// 其余时段 App 不检查、不下载更新，避免现场生产时被升级打断。
+  static const List<int> _winStart = [10, 14, 21];
+  static const List<int> _winEnd = [12, 16, 23];
+
+  /// 服务器存的是 UTC，这里统一换算成北京时间再判断（不依赖手机时区设置）
+  static DateTime beijingNow() =>
+      DateTime.now().toUtc().add(const Duration(hours: 8));
+
+  /// 当前是否在允许更新的时段内
+  static bool inWindow([DateTime? at]) {
+    final h = (at ?? beijingNow()).hour;
+    for (var i = 0; i < _winStart.length; i++) {
+      if (h >= _winStart[i] && h < _winEnd[i]) return true;
+    }
+    return false;
+  }
+
+  static String get windowLabel =>
+      '每天 10:00–12:00、14:00–16:00、21:00–23:00（北京时间）';
+
+  /// 给用户看的「下次什么时候能更新」
+  static String nextWindowText([DateTime? at]) {
+    final t = at ?? beijingNow();
+    if (inWindow(t)) return '当前时段内，可正常检查更新';
+    for (final s in _winStart) {
+      if (t.hour < s) return '今天 ${s.toString().padLeft(2, '0')}:00 开放';
+    }
+    return '明天 10:00 开放';
+  }
+
   /// 上次检查时间（节流，避免每次切页面都打服务器）
   static const String _kLastCheck = 'update_last_check_ms';
   static const String _kSkipBuild = 'update_skip_build';
