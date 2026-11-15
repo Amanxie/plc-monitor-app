@@ -1,0 +1,20 @@
+{
+  "app": "plc_monitor",
+  "kind": "bundle",
+  "format": 3,
+  "exportedAt": "2026-11-14T18:00:00.000",
+  "deviceTag": "OTHERDEV1",
+  "templates": [
+    {
+      "id": "tpl_test_override",
+      "name": "TestOverride",
+      "desc": "from pc test",
+      "points": [
+        {"id": "p1", "name": "Start", "address": "M0.0", "type": "output", "dataType": "boolean", "visible": true, "comment": "Start"},
+        {"id": "p2", "name": "Running", "address": "M0.1", "type": "input", "dataType": "boolean", "visible": true, "comment": "Running"}
+      ]
+    }
+  ],
+  "devices": [],
+  "symbols": {"M0.0": "Start", "M0.1": "Running"}
+}

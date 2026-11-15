@@ -1,0 +1,20 @@
+services:
+  # Render 静态站：托管发布页、version.json 与 APK 安装包
+  # Render 后台 → New → Static Site → 选本仓库 → Publish Directory 填 server
+  - type: web
+    name: plc-monitor-app
+    runtime: static
+    buildCommand: ""
+    staticPublishPath: ./server
+    headers:
+      # 版本信息必须实时，否则 App 检查更新会读到缓存里的旧版本
+      - path: /version.json
+        name: Cache-Control
+        value: no-cache, max-age=0
+      - path: /releases/*
+        name: Cache-Control
+        value: public, max-age=31536000
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
