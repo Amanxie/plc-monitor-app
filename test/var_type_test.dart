@@ -126,7 +126,8 @@ void main() {
     test('浮点去掉多余 0', () {
       expect(formatVarValue(VarType.real, 1.5), '1.5');
       expect(formatVarValue(VarType.real, 2.0), '2');
-      expect(formatVarValue(VarType.real, 3.14159), '3.142');
+      // 1.7 起按有效数字（REAL 7 位）显示，不再死截 3 位小数
+      expect(formatVarValue(VarType.real, 3.14159), '3.14159');
     });
 
     test('空值占位', () {

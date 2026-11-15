@@ -145,18 +145,20 @@ String buildBundle(ExportPick pick, {String deviceTag = ''}) {
     if (!pick.templateIds.contains(t.id)) continue;
     final m = t.toJson();
     if (pick.images && t.imagePath != null && t.imagePath!.isNotEmpty) {
-      try {
-        final f = File(t.imagePath!);
-        if (f.existsSync()) {
-          final bytes = f.readAsBytesSync();
-          // 单图超过 6MB 不内嵌，避免文件过大发不出去
-          if (bytes.length <= 6 * 1024 * 1024) {
-            m['imageData'] = base64Encode(bytes);
-          }
-        }
-      } catch (_) {}
+      _embedImage(m, t.imagePath!);
     }
     tpls.add(m);
+  }
+  // 案例自带点位与背景图，换台手机导入后画面要能一模一样
+  final devs = <Map<String, dynamic>>[];
+  if (pick.devices) {
+    for (final d in st.devices) {
+      final m = d.toJson();
+      if (pick.images && d.imagePath != null && d.imagePath!.isNotEmpty) {
+        _embedImage(m, d.imagePath!);
+      }
+      devs.add(m);
+    }
   }
   return const JsonEncoder.withIndent('  ').convert({
     'app': 'plc_monitor',
@@ -165,9 +167,21 @@ String buildBundle(ExportPick pick, {String deviceTag = ''}) {
     'exportedAt': DateTime.now().toIso8601String(),
     'deviceTag': deviceTag,
     'templates': tpls,
-    'devices': pick.devices ? st.devices.map((d) => d.toJson()).toList() : <dynamic>[],
+    'devices': devs,
     'symbols': pick.symbols ? st.symbols : <String, String>{},
   });
+}
+
+/// 把本地图片塞进 JSON（单图超过 6MB 不内嵌，避免文件过大发不出去）
+void _embedImage(Map<String, dynamic> m, String path) {
+  try {
+    final f = File(path);
+    if (!f.existsSync()) return;
+    final bytes = f.readAsBytesSync();
+    if (bytes.length <= 6 * 1024 * 1024) {
+      m['imageData'] = base64Encode(bytes);
+    }
+  } catch (_) {}
 }
 
 /// 写入导出目录，返回文件路径
@@ -364,6 +378,18 @@ Template _templateFromRaw(Map<String, dynamic> raw, String? imagePath) {
   return t;
 }
 
+/// 案例反序列化：背景图从内嵌数据落到本地，路径换成本机文件
+Future<Device> _deviceFromRaw(Map<String, dynamic> raw, String tag) async {
+  final clean = Map<String, dynamic>.from(raw);
+  final imgB64 = clean.remove('imageData') as String?;
+  final d = Device.fromJson(clean);
+  if (imgB64 != null && imgB64.isNotEmpty) {
+    final p = await _saveImage('dev_$tag', imgB64);
+    if (p != null) d.imagePath = p;
+  }
+  return d;
+}
+
 /// 合并：保留本机现有配置，把导入内容追加进去（重复的跳过，冲突的重命名）
 Future<ImportResult> applyMerge(BundleInfo b) async {
   final st = AppStore.instance;
@@ -398,7 +424,7 @@ Future<ImportResult> applyMerge(BundleInfo b) async {
 
   var nDev = 0;
   for (final raw in b.rawDevices) {
-    final d = Device.fromJson(raw);
+    final d = await _deviceFromRaw(raw, '${stamp}_$nDev');
     d.templateId = idMap[d.templateId] ?? d.templateId;
     final dup = st.devices.any((x) =>
         x.id == d.id || (x.name == d.name && x.ip == d.ip));
@@ -418,6 +444,7 @@ Future<ImportResult> applyMerge(BundleInfo b) async {
     }
   });
 
+  await st.normalizeAfterImport();
   await st.saveAll();
   return ImportResult(
       templates: nTpl, devices: nDev, symbols: nSym, images: nImg,
@@ -453,11 +480,17 @@ Future<ImportResult> applyReplace(BundleInfo b) async {
     if (!kept.any((x) => x.id == t.id)) kept.add(t);
   }
   st.templates = kept;
-  st.devices = b.rawDevices.map((e) => Device.fromJson(e)).toList();
+  final devs = <Device>[];
+  for (var i = 0; i < b.rawDevices.length; i++) {
+    devs.add(await _deviceFromRaw(b.rawDevices[i], 'r${DateTime.now().millisecondsSinceEpoch}_$i'));
+  }
+  st.devices = devs;
   st.symbols = Map<String, String>.from(b.symbols);
   // 覆盖导入等于换成对方那套，之前删掉的出厂模板不再记着
   st.removedBuiltins.clear();
 
+  // 老配置可能没有 points（案例点位还挂在模板上），这里补齐并纠正只读规则
+  await st.normalizeAfterImport();
   await st.saveAll();
   return ImportResult(
       templates: imported.length,

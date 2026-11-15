@@ -129,9 +129,8 @@ class CommManager {
     try {
       final c = _clients[d.id];
       if (c == null) return;
-      final tpl = AppStore.instance.templateOf(d);
-      if (tpl == null) return;
-      final points = tpl.points.where((p) => p.type != PointType.image).toList();
+      // 轮询案例自己的点位：模板删了、改了都不影响通讯
+      final points = d.points.where((p) => p.type != PointType.image).toList();
       if (points.isEmpty) return;
 
       final t0 = DateTime.now();
@@ -191,6 +190,12 @@ class CommManager {
   // ------------------------------------------------------------ 写位
 
   Future<bool> writeBit(Device d, PointItem p, bool value) async {
+    // 双保险：界面上已经不会给 I / Q 点提供写入入口，这里再挡一次
+    if (isForcedReadOnlyAddress(p.address)) {
+      st(d.id).writeError = '「${p.name}」在 I / Q 区（${p.address}），只读，不允许写入';
+      _notify(d.id);
+      return false;
+    }
     if (!p.dataType.isBit) {
       st(d.id).writeError = '「${p.name}」是 ${p.dataType.label} 类型，点动写入只支持 BOOL';
       _notify(d.id);
@@ -240,6 +245,11 @@ class CommManager {
 
   /// 写入任意类型的值：BOOL 走位写，数值类型走字节写
   Future<bool> writeValue(Device d, PointItem p, Object value) async {
+    if (isForcedReadOnlyAddress(p.address)) {
+      st(d.id).writeError = '「${p.name}」在 I / Q 区（${p.address}），只读，不允许写入';
+      _notify(d.id);
+      return false;
+    }
     if (p.dataType.isBit) {
       return writeBit(d, p, value == true || value == 1);
     }

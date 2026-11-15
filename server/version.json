@@ -1,16 +1,19 @@
 {
-  "version": "1.8.2",
-  "build": 16,
+  "version": "1.8.3",
+  "build": 17,
   "releasedAt": "2026-11-15",
-  "apk": "releases/plc-monitor-v1.8.2.apk",
-  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.8.2/plc-monitor-v1.8.2.apk",
-  "size": 52833717,
-  "sha256": "bfb7069010d112d502d9da8f07697090a25c15756230eb1487a21019c19c98af",
+  "apk": "releases/plc-monitor-v1.8.3.apk",
+  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.8.3/plc-monitor-v1.8.3.apk",
+  "size": 52932021,
+  "sha256": "78be256acf00869bfacf372c2a1c2b7016800086fad943bf8a4dc0be4e1dc2a0",
   "force": false,
   "notes": [
-    "修复：导入配置后模板无法删除的问题——所有模板均可删除",
-    "有设备正在使用模板时，删除会提示设备数量，确认后设备与模板一起删除",
-    "出厂模板也允许删除，删掉后可在模板库底部「恢复出厂模板」一键找回",
-    "删除模板前增加确认框，说明影响范围，避免误删"
+    "案例与模板彻底解耦：新建案例时复制一份自己的点位，改模板、删模板都不再影响已建案例",
+    "删除模板不再要求先换模板，也不会删掉案例；模板库显示「N 个案例由此创建」",
+    "安全规则：I 区 / Q 区地址一律只读，只能做状态显示，App 不提供任何写入（含点动）",
+    "编辑控件时地址填到 I/Q 区会自动降级为状态显示并给出提示；点动按钮请使用 M 区 / DB 区",
+    "出厂模板「升降机」「顶升移载」中的 Q 输出点改为状态显示（名称改为 XX输出）",
+    "旧配置自动迁移：老案例的点位与地址在升级后完整保留，导入配置也会同步迁移",
+    "配置导出现在包含案例自己的点位与背景图，换手机导入后画面一致"
   ]
 }

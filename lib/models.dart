@@ -138,6 +138,28 @@ extension VarTypeInfo on VarType {
   }
 }
 
+/// 地址是否落在 I 区 / Q 区（过程映像输入 / 输出）
+///
+/// 这两区的值由 PLC 扫描周期和用户程序决定，App 直接写入会绕过梯形图里的互锁，
+/// 现场太危险 —— 所以统一按只读处理，只能做状态显示。
+/// M 区、DB 区不受限制。
+bool isForcedReadOnlyAddress(String raw) {
+  var s = raw.trim().toUpperCase().replaceAll(' ', '').replaceAll('\t', '');
+  if (s.startsWith('%')) s = s.substring(1);
+  return RegExp(r'^[IQ][BWD]?\d+(\.\d+)?$').hasMatch(s);
+}
+
+/// 地址归属区（I / Q / M / DB），认不出来返回 '?'
+String addrAreaOf(String raw) {
+  var s = raw.trim().toUpperCase().replaceAll(' ', '');
+  if (s.startsWith('%')) s = s.substring(1);
+  if (s.startsWith('DB')) return 'DB';
+  if (s.startsWith('I')) return 'I';
+  if (s.startsWith('Q')) return 'Q';
+  if (s.startsWith('M')) return 'M';
+  return '?';
+}
+
 /// 位解码：S7 按位读回的是「包含该位的那一整个字节」，位在原位置。
 /// 例：读 M30.3，回 0x08 → 为 1；回 0x00 → 为 0。
 /// 少数网关会把结果归一到最低位（回 0x01 表示 ON），两种都兼容。
@@ -188,12 +210,15 @@ String formatFloat(double v, int sig) {
   return m + t;
 }
 
-/// 点位（模板里的一个信号/按钮）
+/// 点位（模板 / 案例里的一个信号或按钮）
 ///
 /// 控件按「用户能不能操作」分三种：
-///   · 状态显示：type=input + writable=false —— 只显示，不给操作
-///   · 输入域： type=input + writable=true  —— 用户可写 0/1 或数值
-///   · 点动按钮：type=output                —— 按下置 1、松开置 0
+///   · 状态显示：只显示实时值，监控页不提供操作
+///   · 输入域： 用户可写 0/1 或数值（仅限 M 区 / DB 区）
+///   · 点动按钮：按下置 1、松开置 0（仅限 M 区 / DB 区，BOOL）
+///
+/// 硬规则：地址落在 I 区 / Q 区的点位一律按状态显示处理，
+/// [writable] 和 [type] 上的历史设置会被 [enforceReadOnlyRule] 纠正。
 class PointItem {
   String id;
   String name;      // 显示名：如 一层到位
@@ -201,7 +226,7 @@ class PointItem {
   PointType type;   // 输入（状态/输入域） / 输出（点动按钮）
   VarType dataType; // 变量数据类型
   bool visible;
-  /// 是否允许用户操作：false = 状态显示（只读），true = 输入域（可写）
+  /// 是否允许用户操作：false = 状态显示（只读），true = 输入域/点动按钮
   bool writable;
   /// 变量注释（对应博图变量表里的注释列）。留空时自动取符号表里同地址的注释。
   String comment;
@@ -217,16 +242,45 @@ class PointItem {
     this.comment = '',
   });
 
-  bool get isOutput => type == PointType.output;
+  /// 地址在 I / Q 区 —— 只读，写不了
+  bool get ioLocked => isForcedReadOnlyAddress(address);
+
+  /// 声明的可写属性是否真的生效（I/Q 区一律不算）
+  bool get canWrite => writable && !ioLocked;
+
+  /// 点动按钮：输出属性 + BOOL + 地址不在 I/Q 区
+  bool get isJogButton => type == PointType.output && !ioLocked;
 
   /// 状态显示（只读，不可操作）
-  bool get isStatusOnly => type == PointType.input && !writable;
+  bool get isStatusOnly => !isJogButton && !canWrite;
 
   /// 输入域（用户可写）
-  bool get isInputField => type == PointType.input && writable;
+  bool get isInputField =>
+      type == PointType.input && writable && !ioLocked;
 
   /// 控件角色名，界面与编辑弹窗共用
-  String get roleLabel => isOutput ? '点动按钮' : (writable ? '输入域' : '状态显示');
+  String get roleLabel =>
+      isJogButton ? '点动按钮' : (canWrite ? '输入域' : '状态显示');
+
+  /// 按「I/Q 只读」规则纠正控件性质，返回 true 表示确实改动了
+  bool enforceReadOnlyRule() {
+    if (!ioLocked) return false;
+    final changed = type != PointType.input || writable;
+    type = PointType.input;
+    writable = false;
+    return changed;
+  }
+
+  PointItem clone({String? id}) => PointItem(
+        id: id ?? this.id,
+        name: name,
+        address: address,
+        type: type,
+        dataType: dataType,
+        visible: visible,
+        writable: writable,
+        comment: comment,
+      );
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -294,88 +348,117 @@ class Template {
 /// 协议类型
 enum Protocol { s7, opcua, modbusTcp, plcsim }
 
-/// 设备配置
+/// 设备配置（一个「案例」）
+///
+/// 点位是**设备自己的副本**：新建案例时从模板深拷贝一份，之后互不相干。
+/// · 改模板不会动已建案例
+/// · 删模板不会影响已建案例（[templateId] 只是来源记录）
+/// · 改案例的点位也不会动模板
 class Device {
   String id;
   String name;
-  String templateId;
+  String templateId;      // 来源模板 id（模板删了也不影响本案例）
+  String sourceTemplate;  // 来源模板名，仅用于界面展示
   String plcType;      // S7-1200 / S7-1500 / S7-300 / 其他
   Protocol protocol;
   String ip;
   int port;            // S7 ISO-on-TCP 端口，默认 102
   int rack;
   int slot;
-  Map<String, String> addresses; // pointId -> 地址（设备可覆盖模板地址）
+  /// 案例自己的点位（含名称、地址、类型、控件性质）
+  List<PointItem> points;
+  /// 案例自己的背景图（从模板带过来，之后独立）
+  String? imagePath;
+
+  /// 1.8.2 及更早版本的「设备地址覆盖表」，只在迁移时用一次
+  Map<String, String> legacyAddresses = {};
 
   Device({
     required this.id,
     required this.name,
     required this.templateId,
+    this.sourceTemplate = '',
     this.plcType = 'S7-1200',
     this.protocol = Protocol.s7,
     this.ip = '192.168.0.1',
     this.port = 102,
     this.rack = 0,
     this.slot = 1,
-    Map<String, String>? addresses,
-  }) : addresses = addresses ?? {};
+    List<PointItem>? points,
+    this.imagePath,
+  }) : points = points ?? [];
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
         'templateId': templateId,
+        'sourceTemplate': sourceTemplate,
         'plcType': plcType,
         'protocol': protocol.name,
         'ip': ip,
         'port': port,
         'rack': rack,
         'slot': slot,
-        'addresses': addresses,
+        'points': points.map((p) => p.toJson()).toList(),
+        'imagePath': imagePath,
       };
 
-  factory Device.fromJson(Map<String, dynamic> j) => Device(
-        id: j['id'] as String,
-        name: j['name'] as String,
-        templateId: j['templateId'] as String,
-        plcType: (j['plcType'] as String?) ?? 'S7-1200',
-        protocol: Protocol.values.byName((j['protocol'] as String?) ?? 's7'),
-        ip: (j['ip'] as String?) ?? '192.168.0.1',
-        port: (j['port'] as int?) ?? 102,
-        rack: (j['rack'] as int?) ?? 0,
-        slot: (j['slot'] as int?) ?? 1,
-        addresses: ((j['addresses'] as Map?) ?? {})
-            .map((k, v) => MapEntry(k as String, v as String)),
-      );
+  factory Device.fromJson(Map<String, dynamic> j) {
+    final rawPts = j['points'];
+    return Device(
+      id: j['id'] as String,
+      name: j['name'] as String,
+      templateId: (j['templateId'] as String?) ?? '',
+      sourceTemplate: (j['sourceTemplate'] as String?) ?? '',
+      plcType: (j['plcType'] as String?) ?? 'S7-1200',
+      protocol: Protocol.values.byName((j['protocol'] as String?) ?? 's7'),
+      ip: (j['ip'] as String?) ?? '192.168.0.1',
+      port: (j['port'] as int?) ?? 102,
+      rack: (j['rack'] as int?) ?? 0,
+      slot: (j['slot'] as int?) ?? 1,
+      // 1.8.3 之前没有 points 字段，靠 store 里的迁移从模板补齐
+      points: rawPts is List
+          ? rawPts
+              .map((e) => PointItem.fromJson(Map<String, dynamic>.from(e as Map)))
+              .toList()
+          : [],
+      imagePath: j['imagePath'] as String?,
+    )..legacyAddresses = ((j['addresses'] as Map?) ?? {})
+        .map((k, v) => MapEntry(k.toString(), v.toString()));
+  }
 }
 
 /// 内置模板
+///
+/// 注意：Q 区是过程映像输出，App 不允许写入，所以这里的输出点全部是状态显示。
+/// 现场要点动，请在案例里新增控件并把地址填到 M 区（M0.0…），由 PLC 程序去驱动 Q。
 final builtinTemplates = <Template>[
   Template(
     id: 'tpl_lift',
     name: '升降机',
-    desc: '6 点位 · 2 层站 · 上升/下降点动',
+    desc: '6 点位 · 2 层站 · 4 输入 + 2 输出反馈',
     points: [
-      PointItem(id: 'p1', name: '一层到位', address: 'I0.0', type: PointType.input),
-      PointItem(id: 'p2', name: '二层到位', address: 'I0.1', type: PointType.input),
-      PointItem(id: 'p3', name: '上升极限', address: 'I0.2', type: PointType.input),
-      PointItem(id: 'p4', name: '下降极限', address: 'I0.3', type: PointType.input),
-      PointItem(id: 'p5', name: '上升按钮', address: 'Q0.0', type: PointType.output),
-      PointItem(id: 'p6', name: '下降按钮', address: 'Q0.1', type: PointType.output),
+      PointItem(id: 'p1', name: '一层到位', address: 'I0.0', type: PointType.input, writable: false),
+      PointItem(id: 'p2', name: '二层到位', address: 'I0.1', type: PointType.input, writable: false),
+      PointItem(id: 'p3', name: '上升极限', address: 'I0.2', type: PointType.input, writable: false),
+      PointItem(id: 'p4', name: '下降极限', address: 'I0.3', type: PointType.input, writable: false),
+      PointItem(id: 'p5', name: '上升输出', address: 'Q0.0', type: PointType.input, writable: false),
+      PointItem(id: 'p6', name: '下降输出', address: 'Q0.1', type: PointType.input, writable: false),
     ],
   ),
   Template(
     id: 'tpl_lift_transfer',
     name: '顶升移载',
-    desc: '8 点位 · 横向/纵向 正反转点动',
+    desc: '8 点位 · 横向/纵向 · 4 输入 + 4 输出反馈',
     points: [
-      PointItem(id: 'p1', name: '到位信号', address: 'I0.0', type: PointType.input),
-      PointItem(id: 'p2', name: '减速信号', address: 'I0.1', type: PointType.input),
-      PointItem(id: 'p3', name: '上升到位', address: 'I0.2', type: PointType.input),
-      PointItem(id: 'p4', name: '下降到位', address: 'I0.3', type: PointType.input),
-      PointItem(id: 'p5', name: '横向正转', address: 'Q0.0', type: PointType.output),
-      PointItem(id: 'p6', name: '横向反转', address: 'Q0.1', type: PointType.output),
-      PointItem(id: 'p7', name: '纵向正转', address: 'Q0.2', type: PointType.output),
-      PointItem(id: 'p8', name: '纵向反转', address: 'Q0.3', type: PointType.output),
+      PointItem(id: 'p1', name: '到位信号', address: 'I0.0', type: PointType.input, writable: false),
+      PointItem(id: 'p2', name: '减速信号', address: 'I0.1', type: PointType.input, writable: false),
+      PointItem(id: 'p3', name: '上升到位', address: 'I0.2', type: PointType.input, writable: false),
+      PointItem(id: 'p4', name: '下降到位', address: 'I0.3', type: PointType.input, writable: false),
+      PointItem(id: 'p5', name: '横向正转输出', address: 'Q0.0', type: PointType.input, writable: false),
+      PointItem(id: 'p6', name: '横向反转输出', address: 'Q0.1', type: PointType.input, writable: false),
+      PointItem(id: 'p7', name: '纵向正转输出', address: 'Q0.2', type: PointType.input, writable: false),
+      PointItem(id: 'p8', name: '纵向反转输出', address: 'Q0.3', type: PointType.input, writable: false),
     ],
   ),
 ];

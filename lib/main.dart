@@ -12,8 +12,8 @@ import 'config_io.dart';
 import 'update.dart';
 
 /// 软件版本（底部展示，同时写入构建号）
-const kAppVersion = '1.8.2';
-const kAppBuild = '16';
+const kAppVersion = '1.8.3';
+const kAppBuild = '17';
 const kBrand = '谢工爱搞自动化';
 
 Future<void> main() async {
@@ -437,7 +437,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildDeviceCard(Device d) {
-    final tpl = AppStore.instance.templateOf(d);
     final s = CommManager.instance.st(d.id);
     final (stText, stColor) = switch (s.state) {
       ConnState.connected => ('通讯正常', cGreen),
@@ -445,7 +444,8 @@ class _HomeScreenState extends State<HomeScreen> {
       ConnState.error => ('异常', cRed),
       _ => ('未连接', cDim),
     };
-    final inputs = tpl?.points.where((p) => p.type == PointType.input && p.visible).toList() ?? [];
+    final pts = d.points.where((p) => p.visible).toList();
+    final inputs = pts.where((p) => p.type == PointType.input).toList();
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: InkWell(
@@ -475,7 +475,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ]),
             const SizedBox(height: 4),
-            Text('${tpl?.name ?? '未知模板'} · ${_protoName(d.protocol)} · ${d.ip} · ${s.latencyMs}ms',
+            Text('${pts.length} 点位 · ${_protoName(d.protocol)} · ${d.ip} · ${s.latencyMs}ms',
                 style: const TextStyle(fontSize: 11, color: cDim)),
             const SizedBox(height: 10),
             if (inputs.isNotEmpty)
@@ -658,14 +658,12 @@ class _WizardScreenState extends State<WizardScreen> {
           .where((d) => d.id == widget.editDeviceId)
           .firstOrNull;
       if (editing != null) {
-        selected = AppStore.instance.templateOf(editing!);
-        if (selected != null) {
-          for (final p in selected!.points) {
-            // 编辑设备时优先显示该设备已保存的地址，而不是模板默认地址
-            addrText.putIfAbsent(p.id, () => editing!.addresses[p.id] ?? p.address);
-            cmtText.putIfAbsent(p.id, () => p.comment);
-            typeSel.putIfAbsent(p.id, () => p.dataType);
-          }
+        // 编辑案例：拷贝一份案例自己的点位来编辑，不回读模板
+        selected = AppStore.instance.draftFromDevice(editing!);
+        for (final p in selected!.points) {
+          addrText.putIfAbsent(p.id, () => p.address);
+          cmtText.putIfAbsent(p.id, () => p.comment);
+          typeSel.putIfAbsent(p.id, () => p.dataType);
         }
         nameCtrl.text = editing!.name;
         ipCtrl.text = editing!.ip;
@@ -756,7 +754,7 @@ class _WizardScreenState extends State<WizardScreen> {
       children: [
         const Text('选择设备模板', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: cText)),
         const SizedBox(height: 6),
-        const Text('模板内置点位定义与控件布局，下一步可编辑 PLC 地址',
+        const Text('模板只作为起点：选中后点位会复制到本案例，之后改模板、删模板都不影响它',
             style: TextStyle(fontSize: 12, color: cSub)),
         const SizedBox(height: 16),
         ...AppStore.instance.templates.map((t) {
@@ -765,11 +763,15 @@ class _WizardScreenState extends State<WizardScreen> {
             padding: const EdgeInsets.only(bottom: 10),
             child: InkWell(
               onTap: () => setState(() {
-                selected = t;
-                for (final p in t.points) {
-                  addrText.putIfAbsent(p.id, () => p.address);
-                  cmtText.putIfAbsent(p.id, () => p.comment);
-                  typeSel.putIfAbsent(p.id, () => p.dataType);
+                // 选模板 = 复制一份点位给这个案例，之后改模板不影响它
+                selected = AppStore.instance.draftFromTemplate(t);
+                addrText.clear();
+                cmtText.clear();
+                typeSel.clear();
+                for (final p in selected!.points) {
+                  addrText[p.id] = p.address;
+                  cmtText[p.id] = p.comment;
+                  typeSel[p.id] = p.dataType;
                 }
               }),
               child: Container(
@@ -818,7 +820,7 @@ class _WizardScreenState extends State<WizardScreen> {
     final pts = selected!.points.where((p) => p.type != PointType.image).toList();
     final statusPts = pts.where((p) => p.isStatusOnly).toList();
     final fieldPts = pts.where((p) => p.isInputField).toList();
-    final outputs = pts.where((p) => p.isOutput).toList();
+    final outputs = pts.where((p) => p.isJogButton).toList();
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
@@ -836,14 +838,14 @@ class _WizardScreenState extends State<WizardScreen> {
           ),
         ]),
         const SizedBox(height: 6),
-        Text('${selected!.name} · ${pts.length} 个控件 · 先选控件性质，再填变量地址',
+        Text('${selected!.name} · ${pts.length} 个控件 · 改动只作用于本案例，不写回模板',
             style: const TextStyle(fontSize: 12, color: cSub)),
         const SizedBox(height: 16),
-        _addrGroup('状态显示 · 只读，用户不能操作', statusPts),
+        _addrGroup('状态显示 · 只读，用户不能操作（I / Q 区只能放这里）', statusPts),
         const SizedBox(height: 14),
-        _addrGroup('输入域 · 用户可写 0/1 或数值', fieldPts),
+        _addrGroup('输入域 · 用户可写 0/1 或数值（M 区 / DB 区）', fieldPts),
         const SizedBox(height: 14),
-        _addrGroup('点动按钮 · 按下置 1，松开置 0', outputs),
+        _addrGroup('点动按钮 · 按下置 1，松开置 0（M 区 / DB 区的 BOOL）', outputs),
         const SizedBox(height: 4),
         Row(children: [
           Expanded(
@@ -885,19 +887,21 @@ class _WizardScreenState extends State<WizardScreen> {
         PointItem(
           id: 'c_${DateTime.now().millisecondsSinceEpoch}',
           name: presetButton ? '新按钮' : '新状态',
-          address: presetButton ? 'Q0.0' : 'I0.0',
+          // 点动按钮只能落在 M 区（I / Q 区只读）
+          address: presetButton ? 'M0.0' : 'I0.0',
           type: presetButton ? PointType.output : PointType.input,
           writable: presetButton,
         );
     final nameC = TextEditingController(text: isNew ? '' : p.name);
     var dtype = typeSel[p.id] ?? p.dataType;
     var addr = addrText[p.id] ?? p.address;
-    var isOut = p.isOutput;
-    var writable = p.writable;
+    var isOut = p.isJogButton;
+    var writable = p.canWrite;
 
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(builder: (ctx, setD) {
+        final ioLocked = isForcedReadOnlyAddress(addr);
         final role = isOut ? '点动按钮' : (writable ? '输入域' : '状态显示');
         return AlertDialog(
           backgroundColor: cCard,
@@ -927,26 +931,29 @@ class _WizardScreenState extends State<WizardScreen> {
                 ChoiceChip(
                   label: const Text('输入域', style: TextStyle(fontSize: 11.5)),
                   selected: !isOut && writable,
-                  onSelected: (_) => setD(() { isOut = false; writable = true; }),
+                  // I / Q 区只读：这里直接禁用
+                  onSelected: ioLocked ? null : (_) => setD(() { isOut = false; writable = true; }),
                   selectedColor: cAccent, backgroundColor: cCardDark,
                   labelStyle: TextStyle(color: (!isOut && writable) ? cAccentText : cSub),
                 ),
                 ChoiceChip(
                   label: const Text('点动按钮', style: TextStyle(fontSize: 11.5)),
                   selected: isOut,
-                  onSelected: (_) => setD(() { isOut = true; writable = true; }),
+                  onSelected: ioLocked ? null : (_) => setD(() { isOut = true; writable = true; }),
                   selectedColor: cAccent, backgroundColor: cCardDark,
                   labelStyle: TextStyle(color: isOut ? cAccentText : cSub),
                 ),
               ]),
               const SizedBox(height: 8),
               Text(
-                  isOut
-                      ? '点动按钮：按住置 1，松开置 0（只能是 BOOL）'
-                      : (writable
-                          ? '输入域：用户在监控页可写入 0/1 或数值'
-                          : '状态显示：只显示实时值，监控页不提供任何操作'),
-                  style: const TextStyle(fontSize: 10, color: cDim)),
+                  ioLocked
+                      ? 'I / Q 区是 PLC 过程映像，写入会绕过程序互锁 —— 只能当状态显示。要点动请把地址改成 M 区或 DB 区。'
+                      : (isOut
+                          ? '点动按钮：按住置 1，松开置 0（只能是 BOOL）'
+                          : (writable
+                              ? '输入域：用户在监控页可写入 0/1 或数值'
+                              : '状态显示：只显示实时值，监控页不提供任何操作')),
+                  style: TextStyle(fontSize: 10, color: ioLocked ? cAmber : cDim)),
               const SizedBox(height: 14),
               Row(children: [
                 const Text('变量类型', style: TextStyle(fontSize: 11, color: cDim)),
@@ -966,10 +973,18 @@ class _WizardScreenState extends State<WizardScreen> {
                 key: ValueKey('wiz_${p.id}_${dtype.name}'),
                 initial: addr,
                 type: dtype,
-                onChanged: (a) => addr = a,
+                onChanged: (a) => setD(() {
+                  addr = a;
+                  // 填成 I / Q 区，立刻降级成状态显示，不让用户误以为能写
+                  if (isForcedReadOnlyAddress(addr)) {
+                    isOut = false;
+                    writable = false;
+                  }
+                }),
               ),
               const SizedBox(height: 6),
-              Text('当前性质：$role', style: const TextStyle(fontSize: 10, color: cAccent)),
+              Text('当前性质：$role',
+                  style: TextStyle(fontSize: 10, color: ioLocked ? cAmber : cAccent)),
             ]),
           ),
           actions: [
@@ -1005,6 +1020,8 @@ class _WizardScreenState extends State<WizardScreen> {
       addrText[p.id] = addr;
       typeSel[p.id] = dtype;
       cmtText.putIfAbsent(p.id, () => p.comment);
+      // 地址在 I / Q 区的，落库前再强制一次，杜绝历史脏数据
+      p.enforceReadOnlyRule();
     });
   }
 
@@ -1032,7 +1049,7 @@ class _WizardScreenState extends State<WizardScreen> {
           ),
           const SizedBox(height: 14),
           Text('把当前 ${pts.length} 个控件和已填地址存成新模板，'
-              '原模板「${src.name}」不变。',
+              '当前案例保持不变，以后新建案例可直接用它。',
               style: const TextStyle(fontSize: 10.5, color: cDim)),
         ]),
         actions: [
@@ -1069,14 +1086,28 @@ class _WizardScreenState extends State<WizardScreen> {
                 visible: p.visible,
                 writable: p.writable,
                 comment: cmtText[p.id] ?? p.comment,
-              ))
+              )..enforceReadOnlyRule())
           .toList(),
     );
     AppStore.instance.templates.add(tpl);
     await AppStore.instance.saveTemplates();
     if (!mounted) return;
     setState(() {
-      if (act == 'bind') selected = tpl;
+      if (act == 'bind') {
+        // 案例改用这个新模板：只换「来源」，点位仍是本案例自己的那份
+        selected = Template(
+          id: tpl.id,
+          name: tpl.name,
+          desc: tpl.desc,
+          imagePath: tpl.imagePath,
+          points: tpl.points.map((p) => p.clone()).toList(),
+        );
+        for (final p in selected!.points) {
+          addrText[p.id] = p.address;
+          typeSel[p.id] = p.dataType;
+          cmtText[p.id] = p.comment;
+        }
+      }
     });
     _toast(act == 'bind'
         ? '已保存模板「${tpl.name}」，本设备已改用'
@@ -1140,12 +1171,14 @@ class _WizardScreenState extends State<WizardScreen> {
     );
     if (picked == null || !mounted) return;
     setState(() {
-      selected = picked;
-      for (final p in picked.points) {
+      selected = AppStore.instance.draftFromTemplate(picked);
+      addrText.clear();
+      cmtText.clear();
+      typeSel.clear();
+      for (final p in selected!.points) {
         if (p.type == PointType.image) continue;
-        // 同一 id 的点位沿用设备已保存地址，其余用新模板默认值
-        addrText[p.id] = editing?.addresses[p.id] ?? p.address;
-        cmtText.putIfAbsent(p.id, () => p.comment);
+        addrText[p.id] = p.address;
+        cmtText[p.id] = p.comment;
         typeSel[p.id] = p.dataType;
       }
     });
@@ -1177,11 +1210,11 @@ class _WizardScreenState extends State<WizardScreen> {
                     margin: const EdgeInsets.only(right: 6),
                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                     decoration: BoxDecoration(
-                        border: Border.all(color: p.isOutput ? cAccent : cLine),
+                        border: Border.all(color: p.isJogButton ? cAccent : cLine),
                         borderRadius: BorderRadius.circular(3)),
                     child: Text(p.roleLabel,
                         style: TextStyle(fontSize: 9.5,
-                            color: p.isOutput ? cAccent : cSub)),
+                            color: p.isJogButton ? cAccent : cSub)),
                   ),
                 ),
                 _TypeButton(
@@ -1389,30 +1422,33 @@ class _WizardScreenState extends State<WizardScreen> {
         Device(id: 'dev_${DateTime.now().millisecondsSinceEpoch}',
             name: '', templateId: '');
     d.name = nameCtrl.text.trim();
-    d.templateId = selected!.id;
     d.plcType = plcType;
     d.protocol = protocol;
     d.ip = ipCtrl.text.trim();
     d.rack = int.tryParse(rackCtrl.text) ?? 0;
     d.slot = int.tryParse(slotCtrl.text) ?? 1;
-    d.addresses = {};
+    // 把草稿点位整份写进案例（深拷贝），模板那边一个字都不动
+    final saved = <PointItem>[];
     for (final p in selected!.points) {
+      final np = p.clone();
       final a = addrText[p.id];
-      if (a != null && a.trim().isNotEmpty) {
-        d.addresses[p.id] = a.trim();
-      }
-      // 注释：点位自己填的写进模板，符号表来的不覆盖
+      if (a != null && a.trim().isNotEmpty) np.address = a.trim();
       final cm = cmtText[p.id];
-      if (cm != null) p.comment = cm.trim();
-      // 类型写回模板（类型是模板属性，同模板的设备共用）
+      if (cm != null) np.comment = cm.trim();
       final t = typeSel[p.id];
-      if (t != null) p.dataType = t;
+      if (t != null) np.dataType = t;
+      // I/Q 区一律只读，写再多次也不会变成可写控件
+      np.enforceReadOnlyRule();
+      saved.add(np);
     }
+    d.points = saved;
+    d.imagePath = selected!.imagePath;
+    d.sourceTemplate = selected!.name;
+    if (editing == null) d.templateId = selected!.id;
     if (editing == null) {
       AppStore.instance.devices.add(d);
     }
     await AppStore.instance.saveDevices();
-    await AppStore.instance.saveTemplates();
     CommManager.instance.st(d.id).state = ConnState.disconnected;
     if (!mounted) return;
     if (isEdit) {
@@ -1467,7 +1503,8 @@ class _MonitorScreenState extends State<MonitorScreen> {
   Future<void> _load() async {
     await AppStore.instance.load();
     d = AppStore.instance.devices.where((x) => x.id == widget.deviceId).firstOrNull;
-    tpl = d == null ? null : AppStore.instance.templateOf(d!);
+    // 画面只认案例自己的点位，模板被删被改都不影响这里
+    tpl = d == null ? null : AppStore.instance.draftFromDevice(d!);
     if (mounted) setState(() {});
   }
 
@@ -1477,19 +1514,18 @@ class _MonitorScreenState extends State<MonitorScreen> {
       return const Scaffold(body: Center(child: Text('设备不存在', style: TextStyle(color: cSub))));
     }
     final s = CommManager.instance.st(d!.id);
-    final visible = tpl!.points.where((p) => p.visible).toList();
-    // 状态信号栏：所有输入点位都显示（只读）
-    final inputs = visible.where((p) => p.type == PointType.input).toList();
-    // 操作栏·点动：按钮属性（输出）且 BOOL —— 按下置 1、松开置 0
-    final jogs = visible
-        .where((p) => p.type == PointType.output && p.dataType.isBit)
+    final visible = tpl!.points
+        .where((p) => p.visible && p.type != PointType.image)
         .toList();
-    // 操作栏·写入：定义为「输入域」的点（可操作）+ 数值点位
+    // 状态信号栏：只读点位（含所有 I / Q 区地址）
+    final inputs = visible.where((p) => p.isStatusOnly).toList();
+    // 操作栏·点动：BOOL 按钮，只可能落在 M / DB 区
+    final jogs = visible
+        .where((p) => p.isJogButton && p.dataType.isBit)
+        .toList();
+    // 操作栏·写入：可写点位（M / DB 区的输入域，或数值型输出点）
     final writes = visible
-        .where((p) =>
-            p.writable &&
-            (p.type == PointType.input ||
-                (p.type == PointType.output && p.dataType.isNumeric)))
+        .where((p) => p.canWrite && !(p.isJogButton && p.dataType.isBit))
         .toList();
     final connected = s.state == ConnState.connected;
 
@@ -1618,7 +1654,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
                       enabled: connected,
                     )),
                 const SizedBox(height: 2),
-                const Text('提示：I 区是过程映像输入，多数 PLC 不允许写入；M / DB 区可写。',
+                const Text('提示：I / Q 区是过程映像，本 App 一律只读；写入只在 M 区、DB 区生效。',
                     style: TextStyle(fontSize: 9.5, color: cDim)),
               ],
             ],
@@ -2088,7 +2124,9 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: _box(const Color(0xFF171B1E), borderColor: const Color(0xFF262C30)),
-              child: const Text('修改保存后，所有使用该模板的设备界面即时同步。地址可在各设备的向导里单独覆盖。',
+              child: const Text('这里只改模板本身：已建案例在创建时就复制了自己的点位，不会跟着变。'
+                  '要改某个案例的画面，请到首页点该案例的「编辑设备」。\n'
+                  'I / Q 区地址一律只读，只能做状态显示；点动按钮请用 M 区或 DB 区。',
                   style: TextStyle(fontSize: 10.5, color: cSub)),
             ),
           ],
@@ -2217,13 +2255,15 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
     final p = tpl!.points[index];
     final nameC = TextEditingController(text: p.name);
     final cmtC = TextEditingController(text: p.comment);
-    bool isOut = p.isOutput;
-    bool writable = p.writable;
+    bool isOut = p.isJogButton;
+    bool writable = p.canWrite;
     VarType dtype = p.dataType;
     String addr = p.address;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => StatefulBuilder(builder: (ctx, setD) => AlertDialog(
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setD) {
+        final ioLocked = isForcedReadOnlyAddress(addr);
+        return AlertDialog(
         backgroundColor: cCard,
         title: const Text('编辑控件', style: TextStyle(fontSize: 16, color: cText)),
         content: SingleChildScrollView(
@@ -2241,6 +2281,8 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
                 onChanged: (t) => setD(() {
                   dtype = t;
                   addr = addrFromText(addr, t);
+                  if (isOut && !t.isBit) { isOut = false; writable = true; }
+                  if (isForcedReadOnlyAddress(addr)) { isOut = false; writable = false; }
                 }),
               ),
             ]),
@@ -2251,7 +2293,10 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
                 key: ValueKey('dlg_${p.id}_${dtype.name}'),
                 initial: addr,
                 type: dtype,
-                onChanged: (a) => addr = a,
+                onChanged: (a) => setD(() {
+                  addr = a;
+                  if (isForcedReadOnlyAddress(addr)) { isOut = false; writable = false; }
+                }),
               ),
             ),
             const SizedBox(height: 10),
@@ -2267,13 +2312,21 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
                   selectedColor: cAccent, backgroundColor: cCardDark),
               const SizedBox(width: 6),
               ChoiceChip(label: const Text('输入域'), selected: !isOut && writable,
-                  onSelected: (_) => setD(() { isOut = false; writable = true; }),
+                  onSelected: ioLocked ? null : (_) => setD(() { isOut = false; writable = true; }),
                   selectedColor: cAccent, backgroundColor: cCardDark),
               const SizedBox(width: 6),
               ChoiceChip(label: const Text('点动按钮'), selected: isOut,
-                  onSelected: (_) => setD(() { isOut = true; writable = true; }),
+                  onSelected: ioLocked ? null : (_) => setD(() { isOut = true; writable = true; }),
                   selectedColor: cAccent, backgroundColor: cCardDark),
             ]),
+            if (ioLocked) ...[
+              const SizedBox(height: 8),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text('I / Q 区只读，只能当状态显示；要点动请改用 M 区 / DB 区地址',
+                    style: TextStyle(fontSize: 10, color: cAmber)),
+              ),
+            ],
           ]),
         ),
         actions: [
@@ -2283,7 +2336,8 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
               style: ElevatedButton.styleFrom(backgroundColor: cAccent, foregroundColor: cAccentText),
               child: const Text('确定')),
         ],
-      )),
+        );
+      }),
     );
     if (ok == true) {
       setState(() {
@@ -2293,6 +2347,7 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
         p.type = isOut ? PointType.output : PointType.input;
         p.writable = isOut ? true : writable;
         p.dataType = dtype;
+        p.enforceReadOnlyRule();
       });
     }
   }
@@ -2301,7 +2356,7 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
     setState(() {
       tpl!.points.add(PointItem(
           id: 'p_${DateTime.now().millisecondsSinceEpoch}',
-          name: '新点位', address: 'I0.0', type: PointType.input));
+          name: '新点位', address: 'I0.0', type: PointType.input, writable: false));
     });
     _editPoint(tpl!.points.length - 1);
   }
@@ -2509,7 +2564,7 @@ class _TemplateLibraryScreenState extends State<TemplateLibraryScreen> {
                 Text(
                     '${t.points.length} 点位'
                     '${t.desc.isEmpty ? '' : ' · ${t.desc}'}'
-                    '${used > 0 ? ' · $used 台设备在用' : ''}',
+                    '${used > 0 ? ' · $used 个案例由此创建' : ''}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 10, color: cDim)),
@@ -2589,7 +2644,7 @@ class _TemplateLibraryScreenState extends State<TemplateLibraryScreen> {
     _toast('已恢复 ${ids.length} 个出厂模板');
   }
 
-  /// 删除模板：先说明影响（几台设备在用 / 是否出厂模板），确认后一并删设备
+  /// 删除模板：只删模板本身。案例自带点位副本，不受任何影响
   Future<void> _deleteTemplate(Template t) async {
     final st = AppStore.instance;
     final used = st.devicesUsing(t.id);
@@ -2606,8 +2661,8 @@ class _TemplateLibraryScreenState extends State<TemplateLibraryScreen> {
               style: const TextStyle(fontSize: 12, color: cSub)),
           if (used > 0) ...[
             const SizedBox(height: 6),
-            Text('· 有 $used 台设备正在用这个模板，删除后这些设备会一起删除',
-                style: const TextStyle(fontSize: 12, color: cRed)),
+            Text('· 有 $used 个案例是从这个模板建的：删模板不会动它们，点位、地址、按钮都照常',
+                style: const TextStyle(fontSize: 12, color: cData)),
           ],
           if (builtin) ...[
             const SizedBox(height: 6),
@@ -2615,7 +2670,7 @@ class _TemplateLibraryScreenState extends State<TemplateLibraryScreen> {
                 style: TextStyle(fontSize: 12, color: cSub)),
           ],
           const SizedBox(height: 10),
-          const Text('删除后不能撤销。',
+          const Text('只删模板本身，已建案例不受影响。模板删除后不能撤销。',
               style: TextStyle(fontSize: 10.5, color: cDim)),
         ]),
         actions: [
@@ -2632,11 +2687,7 @@ class _TemplateLibraryScreenState extends State<TemplateLibraryScreen> {
       ),
     );
     if (ok != true || !mounted) return;
-    // 正在用这个模板的设备：先断通讯，再随模板一起删
-    for (final d in st.devices.where((x) => x.templateId == t.id).toList()) {
-      await CommManager.instance.disconnect(d);
-    }
-    final r = await st.deleteTemplate(t.id, force: true);
+    final r = await st.deleteTemplate(t.id);
     await _refresh();
     _toast(r.msg);
   }

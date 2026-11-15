@@ -73,8 +73,60 @@ class AppStore {
     }
     final ts = sp.getInt('lastSavedAt');
     if (ts != null) lastSavedAt = DateTime.fromMillisecondsSinceEpoch(ts);
+    await _migrate();
     loaded = true;
   }
+
+  /// 老存档迁移 + 只读规则纠正。
+  ///
+  /// 1.8.2 及更早：案例只存「地址覆盖表」，点位挂在共享模板上 —— 改模板会连带改所有案例。
+  /// 这里把模板点位深拷贝进案例（地址用当年填的覆盖值），从此彻底解耦：
+  /// 删模板、改模板都不再影响已建案例。
+  ///
+  /// 同时按「I 区 / Q 区只读」规则纠正所有模板与案例的控件性质。
+  Future<void> _migrate() async {
+    var changed = false;
+    for (final d in devices) {
+      if (d.points.isEmpty) {
+        final tpl = templates.where((t) => t.id == d.templateId).firstOrNull;
+        if (tpl != null) {
+          d.points = tpl.points.map((p) => p.clone()).toList();
+          if (d.sourceTemplate.isEmpty) d.sourceTemplate = tpl.name;
+          d.imagePath ??= tpl.imagePath;
+          changed = true;
+        }
+      }
+      if (d.legacyAddresses.isNotEmpty) {
+        for (final p in d.points) {
+          final a = d.legacyAddresses[p.id];
+          if (a != null && a.trim().isNotEmpty) p.address = a.trim();
+        }
+        d.legacyAddresses = {};
+        changed = true;
+      }
+      for (final p in d.points) {
+        if (p.enforceReadOnlyRule()) changed = true;
+      }
+    }
+    for (final t in templates) {
+      for (final p in t.points) {
+        if (p.enforceReadOnlyRule()) changed = true;
+      }
+    }
+    if (!changed) return;
+    // 启动期迁移不占用户的历史快照名额
+    await _persistQuiet('devices', jsonEncode(devices.map((d) => d.toJson()).toList()));
+    await _persistQuiet(
+        'templates', jsonEncode(templates.map((t) => t.toJson()).toList()));
+  }
+
+  Future<void> _persistQuiet(String key, String value) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString(key, value);
+  }
+
+  /// 导入配置 / 回滚快照后手动调一次：给没有点位的案例从模板补副本，并纠正只读规则
+  Future<void> normalizeAfterImport() => _migrate();
 
   Future<void> saveTemplates() async {
     await _persist('templates',
@@ -162,6 +214,7 @@ class AppStore {
       templates = t;
       devices = d;
       symbols = s ?? {};
+      await normalizeAfterImport();
       await saveAll();
       return true;
     } catch (_) {
@@ -226,30 +279,26 @@ class AppStore {
     return t;
   }
 
-  /// 删除自定义模板；内置模板不允许删除。被设备引用时默认拒绝，[force] 为 true 时连带清引用。
   /// 删除模板。
   ///
+  /// 案例自带点位副本，所以删除模板**不会**影响任何已建案例，也不会删设备。
   /// · 出厂模板也允许删（记进 removedBuiltins，可在模板库恢复）
-  /// · 还有设备在用时需 [force]：连那些设备一起删
   Future<({bool ok, String msg})> deleteTemplate(String id,
       {bool force = false}) async {
     final t = templates.where((x) => x.id == id).firstOrNull;
     if (t == null) return (ok: false, msg: '模板已不存在');
-    final used = devicesUsing(id);
-    if (used > 0 && !force) {
-      return (ok: false, msg: '还有 $used 台设备在用这个模板，先把设备换成其它模板');
-    }
     final wasBuiltin = isBuiltinTemplate(id);
+    final used = devicesUsing(id);
     templates.removeWhere((x) => x.id == id);
     if (wasBuiltin) removedBuiltins.add(id);
-    if (used > 0) {
-      devices.removeWhere((d) => d.templateId == id);
-      await saveDevices();
-    }
     await saveTemplates();
     return (
       ok: true,
-      msg: wasBuiltin ? '已删除出厂模板「${t.name}」，可在模板库底部恢复' : '已删除模板「${t.name}」'
+      msg: used > 0
+          ? '已删除模板「${t.name}」，$used 个案例不受影响'
+          : (wasBuiltin
+              ? '已删除出厂模板「${t.name}」，可在模板库底部恢复'
+              : '已删除模板「${t.name}」')
     );
   }
 
@@ -352,6 +401,7 @@ class AppStore {
 
   // ------------------------------------------------------------ 查询
 
+  /// 案例的来源模板（可能已被删除，返回 null 也不影响案例使用）
   Template? templateOf(Device d) {
     try {
       return templates.firstWhere((t) => t.id == d.templateId);
@@ -360,8 +410,29 @@ class AppStore {
     }
   }
 
-  /// 设备实际使用的地址（设备覆盖优先，其次模板地址）
-  String addrOf(Device d, PointItem p) => d.addresses[p.id] ?? p.address;
+  /// 案例自己的点位
+  List<PointItem> pointsOf(Device d) => d.points;
+
+  /// 点位地址（案例自带地址；1.8.3 之后不再有「模板地址 + 设备覆盖」两层）
+  String addrOf(Device d, PointItem p) => p.address;
+
+  /// 从模板生成一份「案例草稿」（深拷贝，改草稿不影响模板）
+  Template draftFromTemplate(Template t) => Template(
+        id: t.id,
+        name: t.name,
+        desc: t.desc,
+        imagePath: t.imagePath,
+        points: t.points.map((p) => p.clone()).toList(),
+      );
+
+  /// 从已建案例生成草稿（编辑案例时用）
+  Template draftFromDevice(Device d) => Template(
+        id: d.templateId,
+        name: d.sourceTemplate.isNotEmpty ? d.sourceTemplate : d.name,
+        desc: '案例点位',
+        imagePath: d.imagePath,
+        points: d.points.map((p) => p.clone()).toList(),
+      );
 
   /// 点位注释：先看点位自己填的，再查符号表映射
   String commentOf(PointItem p, {String? deviceAddress}) {
@@ -389,16 +460,14 @@ class AppStore {
     return importSymbols(text);
   }
 
-  /// 统计：所有设备的点位里，已经能显示注释的个数 / 总数
+  /// 统计：所有案例的点位里，已经能显示注释的个数 / 总数
   ({int matched, int total}) commentCoverage() {
     var matched = 0;
     var total = 0;
     for (final d in devices) {
-      final tpl = templateOf(d);
-      if (tpl == null) continue;
-      for (final p in tpl.points) {
+      for (final p in d.points) {
         total++;
-        if (commentOf(p, deviceAddress: addrOf(d, p)).isNotEmpty) matched++;
+        if (commentOf(p, deviceAddress: p.address).isNotEmpty) matched++;
       }
     }
     return (matched: matched, total: total);
