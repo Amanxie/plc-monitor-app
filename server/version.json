@@ -1,16 +1,15 @@
 {
-  "version": "1.8.0",
-  "build": 14,
+  "version": "1.8.1",
+  "build": 15,
   "releasedAt": "2026-11-15",
-  "apk": "releases/plc-monitor-v1.8.0.apk",
-  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.8.0/plc-monitor-v1.8.0.apk",
-  "size": 52768153,
-  "sha256": "0ea930b34567ba2cecf29fe4534b30e787bc61cf45d1bed35e13fa1ae52546df",
+  "apk": "releases/plc-monitor-v1.8.1.apk",
+  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.8.1/plc-monitor-v1.8.1.apk",
+  "size": 52833717,
+  "sha256": "25414607a98e23b798dc4be24a039aaccb37cf4124dd224f3e33e0e927b8d966",
   "force": false,
   "notes": [
-    "更新时段限制：每天 10:00–12:00、14:00–16:00、21:00–23:00（北京时间），其余时段不检查不下载",
-    "编辑点位可新增「按钮控件」和「状态控件」：状态显示只读、输入域可写 0/1 或数值，随时可切换",
-    "未连接也能进监控画面：全部按钮灰色不可操作；点断开连接留在当前页，画面整体置灰",
-    "下载与安装流程同 1.7.x，更新服务 plc-monitor-xie.onrender.com"
+    "「更换模板」改为「保存为模板」：把当前画面控件和地址另存为新模板，原模板不受影响",
+    "弹窗可选「保存并改用」，本设备立即切到新模板，后续改动不影响共享模板",
+    "修复：模板库复制模板/恢复内置模板会丢失控件「状态显示/输入域」属性的问题"
   ]
 }

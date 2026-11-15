@@ -189,6 +189,7 @@ class AppStore {
                   type: p.type,
                   dataType: p.dataType,
                   visible: p.visible,
+                  writable: p.writable,
                   comment: p.comment,
                 ))
             .toList(),
@@ -240,6 +241,8 @@ class AppStore {
                 address: p.address,
                 type: p.type,
                 dataType: p.dataType,
+                visible: p.visible,
+                writable: p.writable,
                 comment: p.comment,
               ))
           .toList(),

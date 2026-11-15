@@ -12,8 +12,8 @@ import 'config_io.dart';
 import 'update.dart';
 
 /// 软件版本（底部展示，同时写入构建号）
-const kAppVersion = '1.8.0';
-const kAppBuild = '14';
+const kAppVersion = '1.8.1';
+const kAppBuild = '15';
 const kBrand = '谢工爱搞自动化';
 
 Future<void> main() async {
@@ -825,16 +825,15 @@ class _WizardScreenState extends State<WizardScreen> {
         Row(children: [
           const Expanded(child: Text('编辑点位地址',
               style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: cText))),
-          if (isEdit)
-            TextButton.icon(
-              style: TextButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  minimumSize: const Size(0, 34)),
-              onPressed: _pickTemplate,
-              icon: const Icon(Icons.swap_horiz, size: 15, color: cSub),
-              label: const Text('更换模板',
-                  style: TextStyle(fontSize: 11.5, color: cSub)),
-            ),
+          TextButton.icon(
+            style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(0, 34)),
+            onPressed: _saveAsTemplate,
+            icon: const Icon(Icons.bookmark_add_outlined, size: 15, color: cSub),
+            label: const Text('保存为模板',
+                style: TextStyle(fontSize: 11.5, color: cSub)),
+          ),
         ]),
         const SizedBox(height: 6),
         Text('${selected!.name} · ${pts.length} 个控件 · 先选控件性质，再填变量地址',
@@ -1009,6 +1008,81 @@ class _WizardScreenState extends State<WizardScreen> {
     });
   }
 
+  /// 把当前画面上看到的控件与地址另存为一个新模板（原模板不受影响）
+  Future<void> _saveAsTemplate() async {
+    if (selected == null) return;
+    final src = selected!;
+    final pts = src.points.where((p) => p.type != PointType.image).toList();
+    final nameC = TextEditingController(text: '${src.name} 副本');
+    final act = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: cCard,
+        title: const Text('保存为模板',
+            style: TextStyle(fontSize: 16, color: cText)),
+        content: Column(mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start, children: [
+          TextField(
+            controller: nameC,
+            autofocus: true,
+            style: const TextStyle(fontSize: 14, color: cText),
+            decoration: const InputDecoration(
+                labelText: '模板名称（如：二层提升）',
+                labelStyle: TextStyle(fontSize: 11, color: cDim)),
+          ),
+          const SizedBox(height: 14),
+          Text('把当前 ${pts.length} 个控件和已填地址存成新模板，'
+              '原模板「${src.name}」不变。',
+              style: const TextStyle(fontSize: 10.5, color: cDim)),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('取消', style: TextStyle(color: cDim))),
+          TextButton(onPressed: () => Navigator.pop(ctx, 'save'),
+              child: const Text('仅保存', style: TextStyle(color: cData))),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, 'bind'),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: cAccent, foregroundColor: cAccentText),
+            child: const Text('保存并改用'),
+          ),
+        ],
+      ),
+    );
+    if (act == null || act == 'cancel' || !mounted) return;
+
+    final stamp = DateTime.now().millisecondsSinceEpoch.toString();
+    final nm = nameC.text.trim();
+    final tpl = Template(
+      id: 'tpl_c_$stamp',
+      name: nm.isEmpty ? '${src.name} 副本' : nm,
+      desc: '自定义模板 · 由「${src.name}」保存 · ${pts.length} 控件',
+      imagePath: src.imagePath,
+      // 点位 id 沿用原模板，切过来后地址/类型不用重新填
+      points: pts
+          .map((p) => PointItem(
+                id: p.id,
+                name: p.name,
+                address: (addrText[p.id] ?? p.address).trim(),
+                type: p.type,
+                dataType: typeSel[p.id] ?? p.dataType,
+                visible: p.visible,
+                writable: p.writable,
+                comment: cmtText[p.id] ?? p.comment,
+              ))
+          .toList(),
+    );
+    AppStore.instance.templates.add(tpl);
+    await AppStore.instance.saveTemplates();
+    if (!mounted) return;
+    setState(() {
+      if (act == 'bind') selected = tpl;
+    });
+    _toast(act == 'bind'
+        ? '已保存模板「${tpl.name}」，本设备已改用'
+        : '已保存模板「${tpl.name}」，可在模板库查看');
+  }
+
   /// 编辑模式下更换模板：地址能对上的沿用，对不上的用新模板默认地址
   Future<void> _pickTemplate() async {
     final picked = await showModalBottomSheet<Template>(
@@ -1023,7 +1097,7 @@ class _WizardScreenState extends State<WizardScreen> {
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Row(children: [
-              const Text('更换模板',
+              const Text('选择模板',
                   style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cText)),
               const Spacer(),
               TextButton(
