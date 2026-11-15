@@ -31,7 +31,7 @@ BRANCH = "main"
 API = "https://api.github.com"
 
 SKIP_DIRS = {".git", "build", ".dart_tool", ".gradle", ".cxx", ".idea", "shots", "__pycache__"}
-SKIP_NAMES = {".packages", ".flutter-plugins", ".flutter-plugins-dependencies"}
+SKIP_NAMES = {".packages", ".flutter-plugins", ".flutter-plugins-dependencies", "local.properties"}
 MAX_BLOB = 25 * 1024 * 1024
 
 

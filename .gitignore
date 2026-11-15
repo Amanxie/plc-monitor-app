@@ -52,3 +52,9 @@ app.*.map.json
 *.keystore
 key.properties
 android/local.properties
+
+# 发版产物：APK 走 GitHub Release，不进仓库
+server/releases/*.apk
+
+# 本机路径
+android/local.properties
