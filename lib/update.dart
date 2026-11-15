@@ -6,7 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// 更新服务地址（Render 静态站）。更换域名只改这一处。
-const String kUpdateBaseUrl = 'https://plc-monitor-app.onrender.com';
+const String kUpdateBaseUrl = 'https://plc-monitor-xie.onrender.com';
 
 /// 线上最新版本信息，对应 server/version.json
 class ReleaseInfo {

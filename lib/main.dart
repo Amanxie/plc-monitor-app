@@ -12,8 +12,8 @@ import 'config_io.dart';
 import 'update.dart';
 
 /// 软件版本（底部展示，同时写入构建号）
-const kAppVersion = '1.7.2';
-const kAppBuild = '12';
+const kAppVersion = '1.7.3';
+const kAppBuild = '13';
 const kBrand = '谢工爱搞自动化';
 
 Future<void> main() async {

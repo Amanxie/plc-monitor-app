@@ -1,0 +1,5 @@
+v1.7.3
+- 更新服务器迁到 Render（plc-monitor-xie.onrender.com）
+- APK 由 Render CDN 分发，国内下载更稳
+- 下载后校验文件大小，异常提示重试
+- 其余功能与 1.7.2 一致
