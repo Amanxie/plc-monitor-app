@@ -12,8 +12,8 @@ import 'config_io.dart';
 import 'update.dart';
 
 /// 软件版本（底部展示，同时写入构建号）
-const kAppVersion = '1.8.3';
-const kAppBuild = '17';
+const kAppVersion = '1.8.4';
+const kAppBuild = '18';
 const kBrand = '谢工爱搞自动化';
 
 Future<void> main() async {
@@ -85,6 +85,8 @@ class _LicenseGateState extends State<LicenseGate> {
     } catch (_) {
       // 出错也放行到激活页，由激活流程再拦
     }
+    // 上一轮更新装完后留下的安装包，进 App 就清掉
+    UpdateService.cleanDownloaded();
     if (mounted) setState(() => loading = false);
   }
 
@@ -4157,6 +4159,16 @@ class _UpdateSheetState extends State<_UpdateSheet> {
       }
     } catch (e) {
       if (!mounted) return;
+      final s = e.toString();
+      // 安装器回来前安装包已被清理（装完自动删），重新下一遍即可
+      if (s.contains('NO_FILE') || s.contains('安装包不存在')) {
+        setState(() {
+          apkPath = null;
+          phase = _UpPhase.available;
+          error = null;
+        });
+        return;
+      }
       setState(() {
         phase = _UpPhase.error;
         error = '拉起安装器失败：$e';

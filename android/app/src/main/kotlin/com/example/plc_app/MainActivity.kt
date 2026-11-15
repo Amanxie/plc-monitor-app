@@ -5,6 +5,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.OpenableColumns
 import android.provider.Settings
 import androidx.core.content.FileProvider
@@ -26,6 +28,7 @@ import java.security.MessageDigest
  *      pickFile     系统选文件（能读下载、微信目录等任意位置）
  *      getIncoming  冷启动时由外部「用本应用打开」带进来的文件
  *      incomingFile 热启动时主动推给 Dart 的外部文件
+ *      cleanUpdateApk 清掉 update 目录里已用过的安装包
  */
 class MainActivity : FlutterActivity() {
 
@@ -35,12 +38,26 @@ class MainActivity : FlutterActivity() {
     private var pendingPick: MethodChannel.Result? = null
     private var pendingIncoming: Map<String, String>? = null
 
+    /** 刚交给安装器的 APK：等用户从安装界面回来就删掉，避免装完还占几十 MB */
+    private var pendingApk: File? = null
+    private var pendingApkAt = 0L
+    private val ui = Handler(Looper.getMainLooper())
+
     companion object {
         private const val PICK_REQ = 4201
+
+        /** 从安装器回来多久后才允许删（太早可能还在读文件） */
+        private const val APK_DELETE_GUARD_MS = 15_000L
+
+        /** 兜底：安装界面停留很久时到点也删一次 */
+        private const val APK_DELETE_FALLBACK_MS = 180_000L
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        // 冷启动第一件事：清掉上一轮更新留下的安装包（安装成功后进程会重启，正常就走到这里）
+        cleanLegacyApks(null)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, licChannelName)
             .setMethodCallHandler { call, result ->
@@ -76,6 +93,7 @@ class MainActivity : FlutterActivity() {
                 }
                 "canInstallApk" -> result.success(canInstallApk())
                 "installApk" -> installApk(call.argument<String>("path") ?: "", result)
+                "cleanUpdateApk" -> result.success(cleanLegacyApks(null))
                 else -> result.notImplemented()
             }
         }
@@ -259,11 +277,69 @@ class MainActivity : FlutterActivity() {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             startActivity(i)
+            // 记下来：用户离开安装界面回到 App（或安装完成重启后冷启动）就删掉安装包
+            pendingApk = f
+            pendingApkAt = System.currentTimeMillis()
+            ui.removeCallbacksAndMessages(null)
+            ui.postDelayed({ cleanPendingApk() }, APK_DELETE_FALLBACK_MS)
             result.success("OK")
         } catch (e: Exception) {
             android.util.Log.e("PLC_UPDATE", "install failed", e)
             result.error("INSTALL_FAILED", e.message ?: e.toString(), null)
         }
+    }
+
+    // -------------------------------------------------------- 安装包清理
+
+    override fun onResume() {
+        super.onResume()
+        // 从安装器 / 授权页回来：距发起已过保护时间就立刻删；没过就等到点再删
+        val f = pendingApk ?: return
+        val wait = APK_DELETE_GUARD_MS - (System.currentTimeMillis() - pendingApkAt)
+        if (wait <= 0) {
+            cleanPendingApk()
+        } else {
+            ui.postDelayed({ cleanPendingApk() }, wait + 1_000L)
+        }
+    }
+
+    /** 删除刚交给安装器的那一个 APK */
+    private fun cleanPendingApk() {
+        val f = pendingApk ?: return
+        pendingApk = null
+        ui.removeCallbacksAndMessages(null)
+        try {
+            if (f.exists()) {
+                val ok = f.delete()
+                android.util.Log.i("PLC_UPDATE", "cleanPendingApk ${f.absolutePath} -> $ok")
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("PLC_UPDATE", "cleanPendingApk failed", e)
+        }
+    }
+
+    /**
+     * 清空 update 目录下的安装包。
+     * [keep] 传当前仍在用的文件则不删；返回删除的文件数。
+     */
+    private fun cleanLegacyApks(keep: File?): Int {
+        var n = 0
+        try {
+            val root = getExternalFilesDir(null) ?: filesDir
+            val dir = File(root, "update")
+            if (!dir.isDirectory) return 0
+            dir.listFiles()?.forEach { f ->
+                if (f.isFile && f.name.lowercase().endsWith(".apk") &&
+                    (keep == null || f.absolutePath != keep.absolutePath)
+                ) {
+                    if (f.delete()) n++
+                }
+            }
+            if (n > 0) android.util.Log.i("PLC_UPDATE", "cleanLegacyApks removed $n apk")
+        } catch (e: Exception) {
+            android.util.Log.w("PLC_UPDATE", "cleanLegacyApks failed", e)
+        }
+        return n
     }
 
     // ---------------------------------------------------------------- 授权信息

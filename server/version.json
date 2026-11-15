@@ -1,19 +1,15 @@
 {
-  "version": "1.8.3",
-  "build": 17,
+  "version": "1.8.4",
+  "build": 18,
   "releasedAt": "2026-11-15",
-  "apk": "releases/plc-monitor-v1.8.3.apk",
-  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.8.3/plc-monitor-v1.8.3.apk",
+  "apk": "releases/plc-monitor-v1.8.4.apk",
+  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.8.4/plc-monitor-v1.8.4.apk",
   "size": 52932021,
-  "sha256": "78be256acf00869bfacf372c2a1c2b7016800086fad943bf8a4dc0be4e1dc2a0",
+  "sha256": "aad8a229743c7e8c3cec9d4f7ef2a3177621277d1d31f31f6a4e96789fde34d7",
   "force": false,
   "notes": [
-    "案例与模板彻底解耦：新建案例时复制一份自己的点位，改模板、删模板都不再影响已建案例",
-    "删除模板不再要求先换模板，也不会删掉案例；模板库显示「N 个案例由此创建」",
-    "安全规则：I 区 / Q 区地址一律只读，只能做状态显示，App 不提供任何写入（含点动）",
-    "编辑控件时地址填到 I/Q 区会自动降级为状态显示并给出提示；点动按钮请使用 M 区 / DB 区",
-    "出厂模板「升降机」「顶升移载」中的 Q 输出点改为状态显示（名称改为 XX输出）",
-    "旧配置自动迁移：老案例的点位与地址在升级后完整保留，导入配置也会同步迁移",
-    "配置导出现在包含案例自己的点位与背景图，换手机导入后画面一致"
+    "下载的安装包在装完后自动删除，不再长期占用手机存储（单个包约 50 MB）",
+    "退出安装器回到 App 时立即清理；安装成功重启后进 App 首屏也会清一次",
+    "下载新版本前会先清掉上一次遗留的旧包"
   ]
 }

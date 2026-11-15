@@ -175,6 +175,16 @@ class UpdateService {
     final dir = Directory('${await filesDir()}/update');
     if (!dir.existsSync()) dir.createSync(recursive: true);
     final target = File('${dir.path}/${r.fileName}');
+    // 之前的版本包（含已装完没删掉的）先清掉，目录里只留本次要下的
+    try {
+      for (final f in dir.listSync()) {
+        if (f is File &&
+            f.path != target.path &&
+            f.path.toLowerCase().endsWith('.apk')) {
+          f.deleteSync();
+        }
+      }
+    } catch (_) {}
     if (target.existsSync()) target.deleteSync();
 
     final client = HttpClient()..connectionTimeout = timeout;
@@ -220,6 +230,16 @@ class UpdateService {
   static Future<String> install(String path) async {
     final r = await _ch.invokeMethod<String>('installApk', {'path': path});
     return r ?? '';
+  }
+
+  /// 清掉 update 目录里已经用过的安装包（装完几十 MB 不该留在手机上）。
+  /// 返回删掉的个数。App 启动时调一次即可。
+  static Future<int> cleanDownloaded() async {
+    try {
+      return await _ch.invokeMethod<int>('cleanUpdateApk') ?? 0;
+    } catch (_) {
+      return 0;
+    }
   }
 
   /// 当前是否已有「安装未知应用」权限
