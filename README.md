@@ -45,20 +45,36 @@ keyPassword=******
 
 ## 发布与在线更新
 
+线上站点：**https://plc-monitor-app.onrender.com**（Render 静态站，免费且不休眠）
+
 ```
-server/                 ← Render 静态站的发布目录
+server/                 ← 静态站源目录
 ├─ index.html           ← 下载页（读 version.json 渲染）
-├─ version.json         ← App 检查更新用的元数据
-└─ releases/            ← 各版本 APK（ASCII 文件名）
+└─ version.json         ← App 检查更新用的元数据
+tool/render_build.sh    ← Render 构建脚本：把 server/ 复制成 dist/，再从 Release 抓 APK 进 dist/releases/
 ```
 
-发一个版本：
+APK **不进仓库**（50 MB 二进制会让仓库迅速膨胀），而是作为 GitHub Release 附件存放：
+`version.json` 的 `apkSource` 指向 Release，`apk` 是给 App 用的相对路径（走 Render CDN 下载）。
+Render 构建时按 `apkSource` 把 APK 抓进 `dist/releases/`，手机始终从 `onrender.com` 下载。
 
-1. 改 `pubspec.yaml` 的 `version: x.y.z+build` 与 `lib/main.dart` 的 `kAppVersion / kAppBuild`
-2. `flutter build apk --release`
-3. 把 APK 复制到 `server/releases/plc-monitor-vx.y.z.apk`
-4. 更新 `server/version.json`：`version`、`build`、`size`、`sha256`、`notes`
-5. `git commit && git push` → Render 自动重新发布
+### 一条命令发版
+
+```bash
+python tool/release.py --version 1.7.3 --notes "修复xxx" --notes "新增yyy"
+```
+
+脚本自动完成：改版本号 → 编译 APK → 传成 Release 附件 → 写 `version.json` → 推送仓库 → Render 自动重建。
+
+### 为什么不用 git push
+
+本机出网走白名单代理，`github.com` 的 CONNECT 被拦（502），只有 `api.github.com` 通。
+因此仓库更新统一走 REST API：
+
+```bash
+python tool/publish.py --message "说明"     # 逐文件建 blob → tree → commit → 移动 main
+python tool/upload_release.py --version 1.7.3 --apk server/releases/plc-monitor-v1.7.3.apk
+```
 
 App 端逻辑（`lib/update.dart`）：读取 `version.json` → 比较 `build` → 下载 APK 到外部私有目录 → FileProvider 拉起系统安装器。安装需要用户允许一次「安装未知应用」（Android 8+），首次会跳到系统设置页。
 
