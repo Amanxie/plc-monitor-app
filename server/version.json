@@ -1,15 +1,16 @@
 {
-  "version": "1.8.1",
-  "build": 15,
+  "version": "1.8.2",
+  "build": 16,
   "releasedAt": "2026-11-15",
-  "apk": "releases/plc-monitor-v1.8.1.apk",
-  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.8.1/plc-monitor-v1.8.1.apk",
+  "apk": "releases/plc-monitor-v1.8.2.apk",
+  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.8.2/plc-monitor-v1.8.2.apk",
   "size": 52833717,
-  "sha256": "25414607a98e23b798dc4be24a039aaccb37cf4124dd224f3e33e0e927b8d966",
+  "sha256": "bfb7069010d112d502d9da8f07697090a25c15756230eb1487a21019c19c98af",
   "force": false,
   "notes": [
-    "「更换模板」改为「保存为模板」：把当前画面控件和地址另存为新模板，原模板不受影响",
-    "弹窗可选「保存并改用」，本设备立即切到新模板，后续改动不影响共享模板",
-    "修复：模板库复制模板/恢复内置模板会丢失控件「状态显示/输入域」属性的问题"
+    "修复：导入配置后模板无法删除的问题——所有模板均可删除",
+    "有设备正在使用模板时，删除会提示设备数量，确认后设备与模板一起删除",
+    "出厂模板也允许删除，删掉后可在模板库底部「恢复出厂模板」一键找回",
+    "删除模板前增加确认框，说明影响范围，避免误删"
   ]
 }

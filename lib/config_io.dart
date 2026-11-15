@@ -455,6 +455,8 @@ Future<ImportResult> applyReplace(BundleInfo b) async {
   st.templates = kept;
   st.devices = b.rawDevices.map((e) => Device.fromJson(e)).toList();
   st.symbols = Map<String, String>.from(b.symbols);
+  // 覆盖导入等于换成对方那套，之前删掉的出厂模板不再记着
+  st.removedBuiltins.clear();
 
   await st.saveAll();
   return ImportResult(

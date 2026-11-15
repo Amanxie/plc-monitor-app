@@ -21,6 +21,10 @@ class AppStore {
   /// 地址（规范化后）→ 变量注释，来源于博图变量表粘贴
   Map<String, String> symbols = {};
 
+  /// 被用户删掉的出厂模板 id —— 出厂模板每次启动都会补回列表，
+  /// 靠这份名单记住「已经删过的」，避免删了又回来。
+  final Set<String> removedBuiltins = {};
+
   /// 最近一次保存时间（底部状态用）
   DateTime? lastSavedAt;
 
@@ -31,13 +35,24 @@ class AppStore {
     final sp = await SharedPreferences.getInstance();
     final tRaw = sp.getString('templates');
     final dRaw = sp.getString('devices');
-    templates = List.from(builtinTemplates);
+    final rbRaw = sp.getString('removedBuiltins');
+    if (rbRaw != null) {
+      try {
+        removedBuiltins
+          ..clear()
+          ..addAll((jsonDecode(rbRaw) as List).map((e) => e.toString()));
+      } catch (_) {}
+    }
+    templates = builtinTemplates
+        .where((t) => !removedBuiltins.contains(t.id))
+        .toList();
     if (tRaw != null) {
       final list = (jsonDecode(tRaw) as List)
           .map((e) => Template.fromJson(e as Map<String, dynamic>))
           .toList();
       // 用持久化的自定义/修改模板按 id 合并，保留内置模板
       for (final t in list) {
+        if (removedBuiltins.contains(t.id) && isBuiltinTemplate(t.id)) continue;
         final i = templates.indexWhere((x) => x.id == t.id);
         if (i >= 0) {
           templates[i] = t;
@@ -61,8 +76,11 @@ class AppStore {
     loaded = true;
   }
 
-  Future<void> saveTemplates() => _persist('templates',
-      jsonEncode(templates.map((t) => t.toJson()).toList()));
+  Future<void> saveTemplates() async {
+    await _persist('templates',
+        jsonEncode(templates.map((t) => t.toJson()).toList()));
+    await _persist('removedBuiltins', jsonEncode(removedBuiltins.toList()));
+  }
 
   Future<void> saveDevices() =>
       _persist('devices', jsonEncode(devices.map((d) => d.toJson()).toList()));
@@ -156,6 +174,7 @@ class AppStore {
     templates = List.from(builtinTemplates);
     devices = [];
     symbols = {};
+    removedBuiltins.clear();
     await saveAll();
   }
 
@@ -208,21 +227,42 @@ class AppStore {
   }
 
   /// 删除自定义模板；内置模板不允许删除。被设备引用时默认拒绝，[force] 为 true 时连带清引用。
-  Future<({bool ok, String msg})> deleteTemplate(String id, {bool force = false}) async {
-    if (isBuiltinTemplate(id)) {
-      return (ok: false, msg: '出厂内置模板不能删除，可在编辑页恢复默认内容');
-    }
+  /// 删除模板。
+  ///
+  /// · 出厂模板也允许删（记进 removedBuiltins，可在模板库恢复）
+  /// · 还有设备在用时需 [force]：连那些设备一起删
+  Future<({bool ok, String msg})> deleteTemplate(String id,
+      {bool force = false}) async {
+    final t = templates.where((x) => x.id == id).firstOrNull;
+    if (t == null) return (ok: false, msg: '模板已不存在');
     final used = devicesUsing(id);
     if (used > 0 && !force) {
       return (ok: false, msg: '还有 $used 台设备在用这个模板，先把设备换成其它模板');
     }
-    templates.removeWhere((t) => t.id == id);
+    final wasBuiltin = isBuiltinTemplate(id);
+    templates.removeWhere((x) => x.id == id);
+    if (wasBuiltin) removedBuiltins.add(id);
     if (used > 0) {
       devices.removeWhere((d) => d.templateId == id);
       await saveDevices();
     }
     await saveTemplates();
-    return (ok: true, msg: '已删除模板');
+    return (
+      ok: true,
+      msg: wasBuiltin ? '已删除出厂模板「${t.name}」，可在模板库底部恢复' : '已删除模板「${t.name}」'
+    );
+  }
+
+  /// 被删掉的出厂模板（模板库底部可一键恢复）
+  List<Template> get removedBuiltinTemplates =>
+      builtinTemplates.where((t) => removedBuiltins.contains(t.id)).toList();
+
+  /// 把删掉的出厂模板恢复回列表（内容按出厂定义）
+  Future<bool> restoreRemovedBuiltin(String id) async {
+    if (!removedBuiltins.contains(id)) return false;
+    removedBuiltins.remove(id);
+    final ok = await restoreBuiltin(id);
+    return ok;
   }
 
   /// 把内置模板恢复成出厂内容

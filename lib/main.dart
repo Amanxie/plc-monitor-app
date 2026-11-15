@@ -12,8 +12,8 @@ import 'config_io.dart';
 import 'update.dart';
 
 /// 软件版本（底部展示，同时写入构建号）
-const kAppVersion = '1.8.1';
-const kAppBuild = '15';
+const kAppVersion = '1.8.2';
+const kAppBuild = '16';
 const kBrand = '谢工爱搞自动化';
 
 Future<void> main() async {
@@ -2382,6 +2382,32 @@ class _TemplateLibraryScreenState extends State<TemplateLibraryScreen> {
               )
             else
               ...customs.map(_tile),
+            if (st.removedBuiltinTemplates.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+                decoration: BoxDecoration(
+                    color: const Color(0xFF161A1D),
+                    border: Border.all(color: const Color(0xFF333B40))),
+                child: Row(children: [
+                  const Icon(Icons.restore, size: 15, color: cDim),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                        '已删除的出厂模板：${st.removedBuiltinTemplates.map((e) => e.name).join('、')}',
+                        style: const TextStyle(fontSize: 11, color: cSub)),
+                  ),
+                  TextButton(
+                    onPressed: _restoreBuiltins,
+                    style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        minimumSize: const Size(0, 30)),
+                    child: const Text('全部恢复',
+                        style: TextStyle(fontSize: 11.5, color: cAccent)),
+                  ),
+                ]),
+              ),
+            ],
             const SizedBox(height: 18),
             Row(children: [
               Expanded(
@@ -2501,7 +2527,7 @@ class _TemplateLibraryScreenState extends State<TemplateLibraryScreen> {
               _menuItem('copy', Icons.copy_all_outlined, '复制为新模板'),
               _menuItem('export', Icons.ios_share, '导出并分享'),
               if (builtin) _menuItem('restore', Icons.restore, '恢复出厂内容'),
-              if (!builtin) _menuItem('delete', Icons.delete_outline, '删除模板', danger: true),
+              _menuItem('delete', Icons.delete_outline, '删除模板', danger: true),
             ],
           ),
         ]),
@@ -2547,11 +2573,72 @@ class _TemplateLibraryScreenState extends State<TemplateLibraryScreen> {
         _toast(ok ? '已恢复「${t.name}」出厂内容' : '恢复失败');
         break;
       case 'delete':
-        final r = await AppStore.instance.deleteTemplate(t.id);
-        await _refresh();
-        _toast(r.msg);
+        await _deleteTemplate(t);
         break;
     }
+  }
+
+  /// 把删掉的出厂模板一次性恢复
+  Future<void> _restoreBuiltins() async {
+    final st = AppStore.instance;
+    final ids = st.removedBuiltinTemplates.map((e) => e.id).toList();
+    for (final id in ids) {
+      await st.restoreRemovedBuiltin(id);
+    }
+    await _refresh();
+    _toast('已恢复 ${ids.length} 个出厂模板');
+  }
+
+  /// 删除模板：先说明影响（几台设备在用 / 是否出厂模板），确认后一并删设备
+  Future<void> _deleteTemplate(Template t) async {
+    final st = AppStore.instance;
+    final used = st.devicesUsing(t.id);
+    final builtin = st.isBuiltinTemplate(t.id);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: cCard,
+        title: Text('删除模板「${t.name}」',
+            style: const TextStyle(fontSize: 16, color: cText)),
+        content: Column(mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('· ${t.points.length} 个控件',
+              style: const TextStyle(fontSize: 12, color: cSub)),
+          if (used > 0) ...[
+            const SizedBox(height: 6),
+            Text('· 有 $used 台设备正在用这个模板，删除后这些设备会一起删除',
+                style: const TextStyle(fontSize: 12, color: cRed)),
+          ],
+          if (builtin) ...[
+            const SizedBox(height: 6),
+            const Text('· 这是出厂模板，删掉后可在模板库底部「恢复出厂模板」找回',
+                style: TextStyle(fontSize: 12, color: cSub)),
+          ],
+          const SizedBox(height: 10),
+          const Text('删除后不能撤销。',
+              style: TextStyle(fontSize: 10.5, color: cDim)),
+        ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消', style: TextStyle(color: cDim))),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: cRed, foregroundColor: Colors.white),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    // 正在用这个模板的设备：先断通讯，再随模板一起删
+    for (final d in st.devices.where((x) => x.templateId == t.id).toList()) {
+      await CommManager.instance.disconnect(d);
+    }
+    final r = await st.deleteTemplate(t.id, force: true);
+    await _refresh();
+    _toast(r.msg);
   }
 
   Future<void> _newTemplate() async {
