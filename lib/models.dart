@@ -310,6 +310,132 @@ class PointItem {
       );
 }
 
+/// 报警定义（案例自己的报警表，对应「报警记录」Excel 的 A~F 列）
+///
+/// 列含义：
+///   A 报警ID / B 优先级（0 排最上面）/ C 读取区域（DB91Bit、DB90Bit、MW）/
+///   D 绝对地址（最后一位是位地址，前面是字地址，如 3150 → 315.0）/
+///   E 触发数值（1=值为 1 报警，0=值为 0 报警）/ F 报警内容（≤50 字）
+class AlarmItem {
+  int id;
+  int priority;
+  String address;    // 解析后的绝对地址：DB91.DBX3.0 / M186.6
+  bool triggerHigh;  // true = 值为 1 报警；false = 值为 0 报警
+  String text;
+
+  AlarmItem({
+    required this.id,
+    required this.priority,
+    required this.address,
+    required this.triggerHigh,
+    required this.text,
+  });
+
+  AlarmItem clone() => AlarmItem(
+        id: id, priority: priority, address: address,
+        triggerHigh: triggerHigh, text: text,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'priority': priority,
+        'address': address,
+        'triggerHigh': triggerHigh,
+        'text': text,
+      };
+
+  factory AlarmItem.fromJson(Map<String, dynamic> j) => AlarmItem(
+        id: (j['id'] as num?)?.toInt() ?? 0,
+        priority: (j['priority'] as num?)?.toInt() ?? 0,
+        address: (j['address'] as String?) ?? '',
+        triggerHigh: (j['triggerHigh'] as bool?) ?? true,
+        text: (j['text'] as String?) ?? '',
+      );
+}
+
+/// 解析从 Excel 复制粘贴过来的报警表（制表符分隔 A~F 列，每行一条，可含表头）
+///
+/// 返回 (报警列表, 被丢弃行的错误说明)。解析规则：
+///   · C 列「DB91Bit」→ DB91 区；「DB90Bit」→ DB90 区；「MW」→ M 区
+///   · D 列绝对地址：末位是位地址、前面是字地址（3150 → 315.0，30 → 3.0）
+///   · E 列触发数值：1 → 值为 1 报警；0 → 值为 0 报警
+(List<AlarmItem>, List<String>) parseAlarmTable(String raw) {
+  final alarms = <AlarmItem>[];
+  final errors = <String>[];
+  final lines = raw.replaceAll('\r', '').split('\n');
+  for (int ln = 0; ln < lines.length; ln++) {
+    final line = lines[ln].trim();
+    if (line.isEmpty) continue;
+    // Excel 粘贴是制表符分隔；兼容 2 个以上空格分隔
+    var cols = line.split('\t').map((e) => e.trim()).toList();
+    if (cols.length < 6) {
+      final alt = line.split(RegExp(r'\s{2,}')).map((e) => e.trim()).toList();
+      if (alt.length >= 6) cols = alt;
+    }
+    if (cols.length < 6) {
+      // Excel「另存为 CSV」是逗号分隔：只切前 5 个逗号，第 6 段整段作为内容，
+      // 这样报警内容里自带逗号也不会被截断
+      final parts = line.split(',');
+      if (parts.length >= 6) {
+        cols = [
+          ...parts.take(5).map((e) => e.trim()),
+          parts.skip(5).join(',').trim(),
+        ];
+      }
+    }
+    if (cols.length < 6) {
+      errors.add('第${ln + 1}行：列数不足（需要 6 列：ID/优先级/区域/地址/触发值/内容）');
+      continue;
+    }
+    final id = num.tryParse(cols[0])?.toInt();
+    if (id == null) continue; // 表头行 / 干扰行静默跳过
+    final priority = num.tryParse(cols[1])?.toInt() ?? 0;
+    final areaRaw = cols[2].trim().toUpperCase().replaceAll(' ', '');
+    final addrRaw = num.tryParse(cols[3])?.toInt();
+    if (addrRaw == null || addrRaw < 0) {
+      errors.add('第${ln + 1}行：绝对地址「${cols[3]}」不是数字');
+      continue;
+    }
+    // D 列：末位是位地址，前面是字地址
+    final word = addrRaw ~/ 10;
+    final bit = addrRaw % 10;
+    if (bit > 7) {
+      errors.add('第${ln + 1}行：地址 $addrRaw 的位号 $bit 超出 0~7');
+      continue;
+    }
+    final trig = num.tryParse(cols[4])?.toInt();
+    if (trig == null || (trig != 0 && trig != 1)) {
+      errors.add('第${ln + 1}行：触发数值「${cols[4]}」只能是 0 或 1');
+      continue;
+    }
+    // C 列：DB 区（DB91Bit / DB91）→ DB91.DBX{word}.{bit}；MW → M{word}.{bit}
+    String address;
+    final dbMatch = RegExp(r'^DB(\d+)(BIT)?$').firstMatch(areaRaw);
+    if (dbMatch != null) {
+      address = 'DB${dbMatch.group(1)}.DBX$word.$bit';
+    } else if (areaRaw == 'MW' || areaRaw == 'M') {
+      address = 'M$word.$bit';
+    } else {
+      errors.add('第${ln + 1}行：区域「${cols[2]}」认不出来，只支持 DBxxBit / MW');
+      continue;
+    }
+    // F 列：报警内容，限 50 字
+    final text = cols.sublist(5).join(' ').trim();
+    if (text.isEmpty) {
+      errors.add('第${ln + 1}行：报警内容为空');
+      continue;
+    }
+    alarms.add(AlarmItem(
+      id: id,
+      priority: priority,
+      address: address,
+      triggerHigh: trig == 1,
+      text: text.length > 50 ? text.substring(0, 50) : text,
+    ));
+  }
+  return (alarms, errors);
+}
+
 /// 模板（界面布局 + 点位集合）
 class Template {
   String id;
@@ -367,6 +493,10 @@ class Device {
   int slot;
   /// 案例自己的点位（含名称、地址、类型、控件性质）
   List<PointItem> points;
+  /// 案例自己的报警表（从报警记录表导入，随案例保存）
+  List<AlarmItem> alarms;
+  /// 报警灯地址（BOOL，值为 1 亮红灯、0 亮绿色；空 = 不显示报警灯）
+  String alarmLamp = '';
   /// 案例自己的背景图（从模板带过来，之后独立）
   String? imagePath;
 
@@ -385,8 +515,11 @@ class Device {
     this.rack = 0,
     this.slot = 1,
     List<PointItem>? points,
+    List<AlarmItem>? alarms,
+    this.alarmLamp = '',
     this.imagePath,
-  }) : points = points ?? [];
+  }) : points = points ?? [],
+       alarms = alarms ?? [];
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -400,6 +533,8 @@ class Device {
         'rack': rack,
         'slot': slot,
         'points': points.map((p) => p.toJson()).toList(),
+        'alarms': alarms.map((a) => a.toJson()).toList(),
+        'alarmLamp': alarmLamp,
         'imagePath': imagePath,
       };
 
@@ -422,6 +557,10 @@ class Device {
               .map((e) => PointItem.fromJson(Map<String, dynamic>.from(e as Map)))
               .toList()
           : [],
+      alarms: (j['alarms'] as List?)
+          ?.map((e) => AlarmItem.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList(),
+      alarmLamp: (j['alarmLamp'] as String?) ?? '',
       imagePath: j['imagePath'] as String?,
     )..legacyAddresses = ((j['addresses'] as Map?) ?? {})
         .map((k, v) => MapEntry(k.toString(), v.toString()));

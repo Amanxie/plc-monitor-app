@@ -1,15 +1,19 @@
 {
-  "version": "1.8.4",
-  "build": 18,
-  "releasedAt": "2026-11-15",
-  "apk": "releases/plc-monitor-v1.8.4.apk",
-  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.8.4/plc-monitor-v1.8.4.apk",
-  "size": 52932021,
-  "sha256": "aad8a229743c7e8c3cec9d4f7ef2a3177621277d1d31f31f6a4e96789fde34d7",
+  "version": "1.8.5",
+  "build": 19,
+  "releasedAt": "2026-11-16",
+  "apk": "releases/plc-monitor-v1.8.5.apk",
+  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.8.5/plc-monitor-v1.8.5.apk",
+  "size": 53129021,
+  "sha256": "bf121df25e17ffd3f63e64c690be9f3aed61e7be6a12213981f399201a5094d6",
   "force": false,
   "notes": [
-    "下载的安装包在装完后自动删除，不再长期占用手机存储（单个包约 50 MB）",
-    "退出安装器回到 App 时立即清理；安装成功重启后进 App 首屏也会清一次",
-    "下载新版本前会先清掉上一次遗留的旧包"
+    "新增报警信息显示：状态区上方常驻报警行，滚动显示触发中的报警（ID + 内容）",
+    "新增报警列表页：点报警行进入，只列触发中的报警，上下滑动查看全部，返回监控页不断连接",
+    "新增报警灯：设备报警灯地址为 1 亮红灯、为 0 亮绿灯，只做状态显示",
+    "报警每秒扫描一次，触发与恢复 1 秒内反映",
+    "设备编辑页支持导入报警表：Excel 复制 A~F 列直接粘贴，或导入 txt / csv 文件（自动识别 UTF-8 与 GBK 编码）",
+    "点位容错：PLC 上读不到的点位自动跳过、不再反复通讯，连接与好点位照常工作，顶部提示具体地址",
+    "修复真机 PLC 采集不到报警的报文问题；状态区标题精简为「显示状态」字样"
   ]
 }

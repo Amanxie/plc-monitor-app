@@ -27,6 +27,17 @@ class S7ReadItem {
   const S7ReadItem(this.point, this.type);
 }
 
+/// 把解析后的地址还原成人类可读文本（报错提示用）；[isBit] 为真按位格式输出
+String formatS7Point(S7Point p, {bool isBit = false}) {
+  if (p.area == 0x84) {
+    if (isBit) return 'DB${p.db}.DBX${p.byteIndex}.${p.bitIndex}';
+    return 'DB${p.db}.DBB${p.byteIndex}';
+  }
+  const names = {0x81: 'I', 0x82: 'Q', 0x83: 'M'};
+  final n = names[p.area] ?? 'A${p.area}';
+  return isBit ? '$n${p.byteIndex}.${p.bitIndex}' : '$n${p.byteIndex}';
+}
+
 /// 带中文说明的 S7 异常
 class S7Exception implements Exception {
   final String message;
@@ -421,6 +432,8 @@ class S7Client {
     if (items.isEmpty) return <Object?>[];
     if (!_connected) throw S7Exception('未连接');
 
+    badAddresses.clear();
+
     final maxItems = ((_pduSize - 20) ~/ 12).clamp(1, 19);
     final result = List<Object?>.filled(items.length, null);
 
@@ -493,7 +506,77 @@ class S7Client {
   /// 最近一次解析遇到的项错误码（用于给出准确的中文提示）
   int? _itemError;
 
+  /// 最近一次 readValues 里 PLC 上读不到的点位地址（rc != 0xFF，值为 null）
+  final List<String> badAddresses = [];
+
+  // ---------------------------------------------------------------- 读字节块
+
+  /// 从 [start] 开始连续读 [count] 个字节（报警位批量采集用，一次读一整段）
+  ///
+  /// 返回原始字节。地址超界（rc=0x05/0x0A）等错误直接抛异常。
+  Future<List<int>> readBytes(S7Point start, int count,
+      {Duration timeout = const Duration(seconds: 3)}) {
+    return _serialize(() => _readBytesRaw(start, count, timeout: timeout));
+  }
+
+  Future<List<int>> _readBytesRaw(S7Point start, int count,
+      {required Duration timeout}) async {
+    if (count <= 0) return <int>[];
+    if (!_connected) throw S7Exception('未连接');
+
+    _pduRef = (_pduRef + 1) & 0xFFFF;
+    final addr = start.byteIndex * 8;
+    final b = BytesBuilder();
+    b.add(<int>[0x03, 0x00, 0x00, 0x00]); // TPKT 占位
+    b.add(<int>[0x02, 0xF0, 0x80]); // COTP DT
+    b.add(<int>[0x32, 0x01, 0x00, 0x00]); // Job
+    b.add(<int>[(_pduRef >> 8) & 0xFF, _pduRef & 0xFF]);
+    b.add(<int>[0x00, 0x0E]); // paramLen = 14（功能 1 字节 + 项数 1 字节 + 项 12 字节）
+    b.add(<int>[0x00, 0x00]); // dataLen = 0
+    b.add(<int>[0x04, 0x01]); // 功能：读，1 个项
+    b.add(<int>[0x12, 0x0A, 0x10]); // S7ANY
+    b.add(<int>[0x02]); // 传输尺寸：BYTE
+    b.add(<int>[(count >> 8) & 0xFF, count & 0xFF]); // 长度：count 字节
+    b.add(<int>[(start.db >> 8) & 0xFF, start.db & 0xFF]);
+    b.add(<int>[start.area & 0xFF]);
+    b.add(<int>[(addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF]);
+
+    final bytes = b.toBytes();
+    final tpkt = bytes.length;
+    bytes[2] = (tpkt >> 8) & 0xFF;
+    bytes[3] = tpkt & 0xFF;
+
+    final r = await _exchange(bytes, timeout);
+    final errClass = r[17], errCode = r[18];
+    if (errClass != 0) throw _mapError(errClass, errCode);
+
+    final plen = (r[13] << 8) | r[14];
+    int pos = 19 + plen;
+    if (pos + 4 > r.length) throw S7Exception('读字节块应答异常');
+    final rc = r[pos];
+    final ts = r[pos + 1];
+    final lenField = (r[pos + 2] << 8) | r[pos + 3];
+    if (rc != 0xFF) {
+      throw S7Exception('读字节块失败，返回码 0x${rc.toRadixString(16)}'
+          '${rc == 0x0A ? '（DB 块可能未创建或为优化块）' : ''}');
+    }
+    // BYTE/WORD 应答长度是「位数」，OCTET_STRING(0x09) 是「字节数」
+    final byteLen =
+        ts == 0x09 ? lenField : (ts == 0x03 || ts == 0x04 ? (lenField + 7) >> 3 : lenField);
+    final take = byteLen < count ? byteLen : count;
+    final out = <int>[];
+    for (int i = 0; i < take; i++) {
+      out.add(r[pos + 4 + i] & 0xFF);
+    }
+    while (out.length < count) out.add(0); // 不足补 0，不打断轮询
+    return out;
+  }
+
+
   /// 解析读应答的数据项；布局与声明长度不符时返回 null
+  ///
+  /// 容错：某个项 rc != 0xFF（地址不存在 / 优化块等）时，该项值保持 null、
+  /// 地址记入 [badAddresses]，其余项正常解析——一个坏点位不再打死整帧读取。
   List<Object?>? _parseItems(Uint8List r, int dataStart, int dataLen,
       List<S7ReadItem> items, int start, int cnt,
       {required bool pad, bool strict = true}) {
@@ -509,9 +592,12 @@ class S7Client {
       if (pos + 4 > end) return null;
       final rc = r[pos];
       if (rc != 0xFF) {
-        // 只有确认布局正确时才记录错误码，避免误判
+        // 错误项应答：transport size 固定 0x04、长度 0 → 只有 4 字节头、无数据
         _itemError ??= rc;
-        return null;
+        badAddresses.add(formatS7Point(items[idx].point,
+            isBit: items[idx].type.isBit));
+        pos += 4;
+        continue;
       }
       final ts = r[pos + 1];
       final lenField = (r[pos + 2] << 8) | r[pos + 3];

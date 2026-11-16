@@ -12,8 +12,8 @@ import 'config_io.dart';
 import 'update.dart';
 
 /// 软件版本（底部展示，同时写入构建号）
-const kAppVersion = '1.8.4';
-const kAppBuild = '18';
+const kAppVersion = '1.8.5';
+const kAppBuild = '19';
 const kBrand = '谢工爱搞自动化';
 
 Future<void> main() async {
@@ -646,6 +646,10 @@ class _WizardScreenState extends State<WizardScreen> {
   String plcType = 'S7-1200';
   Protocol protocol = Protocol.s7;
   Device? editing;
+  /// 报警灯地址（向导内暂存，保存时写入案例）
+  final lampCtrl = TextEditingController();
+  /// 向导内暂存的报警表（保存时写入案例）
+  List<AlarmItem> draftAlarms = [];
 
   @override
   void initState() {
@@ -673,6 +677,9 @@ class _WizardScreenState extends State<WizardScreen> {
         slotCtrl.text = editing!.slot.toString();
         plcType = editing!.plcType;
         protocol = editing!.protocol;
+        // 报警灯与报警表随案例带入
+        lampCtrl.text = editing!.alarmLamp;
+        draftAlarms = editing!.alarms.map((a) => a.clone()).toList();
         // 编辑已有案例：模板已定，直接进地址步，不再让用户重选模板
         step = 1;
       }
@@ -860,8 +867,161 @@ class _WizardScreenState extends State<WizardScreen> {
                 () => _showPointEditor(presetButton: false)),
           ),
         ]),
+        const SizedBox(height: 20),
+        _alarmGroup(),
       ],
     );
+  }
+
+  /// 报警组：报警灯地址 + 报警表导入（只随本案例保存）
+  Widget _alarmGroup() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+          color: cCard, border: Border.all(color: cLine)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.notifications_active_outlined,
+              size: 15, color: cSub),
+          const SizedBox(width: 6),
+          const Text('报警',
+              style: TextStyle(
+                  fontSize: 12.5,
+                  color: cText,
+                  fontWeight: FontWeight.w600)),
+          const Spacer(),
+          Text(
+              draftAlarms.isEmpty
+                  ? '未导入报警表'
+                  : '已导入 ${draftAlarms.length} 条报警',
+              style: TextStyle(
+                  fontSize: 11,
+                  color: draftAlarms.isEmpty ? cDim : cSub)),
+        ]),
+        const SizedBox(height: 10),
+        const Text('报警灯 · 状态显示，地址为 1 亮红灯、0 亮绿色',
+            style: TextStyle(fontSize: 10.5, color: cSub)),
+        const SizedBox(height: 6),
+        AddressField(
+          key: const ValueKey('alarm_lamp'),
+          initial: lampCtrl.text,
+          type: VarType.boolean,
+          onChanged: (a) => lampCtrl.text = a,
+        ),
+        const SizedBox(height: 12),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(0, 34)),
+            onPressed: _importAlarms,
+            icon: const Icon(Icons.upload_file,
+                size: 14, color: cSub),
+            label: Text(draftAlarms.isEmpty ? '导入报警表' : '重新导入',
+                style:
+                    const TextStyle(fontSize: 11.5, color: cSub)),
+          ),
+        ),
+        const SizedBox(height: 2),
+        const Text(
+            '报警表 6 列：ID / 优先级 / 区域 / 绝对地址 / 触发值 / 内容。'
+            'Excel 选中 A~F 列复制粘贴即可，也支持制表符 .txt 与 Excel 另存的 .csv 文件，'
+            '导入后监控页顶部滚动显示报警。S7 / PLCSIM 设备生效。',
+            style: TextStyle(fontSize: 9.5, color: cDim)),
+      ]),
+    );
+  }
+
+  /// 粘贴导入报警表：Excel 里选中 A~F 列复制 → 粘贴进来；
+  /// 也可以选一个制表符分隔的 .txt/.csv 文件（几百条报警用文件更方便）
+  Future<void> _importAlarms() async {
+    final pasteC = TextEditingController();
+    final act = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: cCard,
+        title: const Text('导入报警表',
+            style: TextStyle(fontSize: 16, color: cText)),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Text(
+                '在 Excel 里选中报警表的 A~F 列（含表头可以），Ctrl+C 复制后粘贴到下面；'
+                '也可以点「从文件导入」选 .txt / .csv（.xls/.xlsx 读不了，请先另存为 CSV UTF-8）。'
+                '每行一条报警。',
+                style: TextStyle(fontSize: 11, color: cSub)),
+            const SizedBox(height: 10),
+            TextField(
+              controller: pasteC,
+              maxLines: 7,
+              style: const TextStyle(fontSize: 11, color: cText,
+                  fontFamily: 'monospace'),
+              decoration: const InputDecoration(
+                hintText: '1\t0\tDB91Bit\t30\t1\t地面PLC未收到机载PLC心跳',
+                hintStyle: TextStyle(fontSize: 10, color: cDim),
+                enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: cLine)),
+                focusedBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: cAccent)),
+              ),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, 'file'),
+              child: const Text('从文件导入',
+                  style: TextStyle(color: cData))),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, ''),
+              child: const Text('取消', style: TextStyle(color: cDim))),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, 'paste'),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: cAccent,
+                  foregroundColor: cAccentText),
+              child: const Text('导入')),
+        ],
+      ),
+    );
+    var raw = '';
+    if (act == 'file') {
+      try {
+        final f = await ConfigFileIo.pick(mime: 'text/*');
+        if (f == null) {
+          pasteC.dispose();
+          return;
+        }
+        final lower = f.name.toLowerCase();
+        if (lower.endsWith('.xls') || lower.endsWith('.xlsx')) {
+          pasteC.dispose();
+          _toast('Excel 的 .xls/.xlsx 是二进制读不了，请在 Excel 里另存为「CSV UTF-8」再导入，或直接复制 A~F 列粘贴');
+          return;
+        }
+        raw = f.content;
+      } catch (e) {
+        pasteC.dispose();
+        _toast('选文件失败：$e');
+        return;
+      }
+    } else if (act == 'paste') {
+      raw = pasteC.text;
+    } else {
+      pasteC.dispose();
+      return;
+    }
+    final (parsed, errors) = parseAlarmTable(raw);
+    pasteC.dispose();
+    if (!mounted) return;
+    if (parsed.isEmpty) {
+      _toast(errors.isEmpty ? '没有解析到任何报警' : errors.first);
+      return;
+    }
+    setState(() => draftAlarms = parsed);
+    _toast(errors.isEmpty
+        ? '已导入 ${parsed.length} 条报警'
+        : '已导入 ${parsed.length} 条，${errors.length} 行被跳过：${errors.first}');
   }
 
   Widget _addCtrlBtn(String label, IconData icon, VoidCallback onTap) {
@@ -1444,6 +1604,9 @@ class _WizardScreenState extends State<WizardScreen> {
       saved.add(np);
     }
     d.points = saved;
+    // 报警灯与报警表随案例保存
+    d.alarmLamp = lampCtrl.text.trim();
+    d.alarms = draftAlarms.map((a) => a.clone()).toList();
     d.imagePath = selected!.imagePath;
     d.sourceTemplate = selected!.name;
     if (editing == null) d.templateId = selected!.id;
@@ -1470,9 +1633,194 @@ class _WizardScreenState extends State<WizardScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(msg), backgroundColor: cCard, duration: const Duration(seconds: 2)));
   }
+
+  @override
+  void dispose() {
+    lampCtrl.dispose();
+    super.dispose();
+  }
 }
 
 // ================== 监控操作界面 ==================
+/// 报警列表页（需求 10）：点击监控页报警行进入。
+/// 列表懒加载渲染（一屏约 15 条），上下滑动查看其余报警；
+/// 触发的排最前（优先级小的在前），实时跟随通讯刷新。
+class AlarmListPage extends StatefulWidget {
+  final String deviceId;
+  const AlarmListPage({super.key, required this.deviceId});
+  @override
+  State<AlarmListPage> createState() => _AlarmListPageState();
+}
+
+class _AlarmListPageState extends State<AlarmListPage> {
+  Device? d;
+  bool _disposed = false;
+  late final void Function() _listener = _refresh;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+    CommManager.instance.onChange(widget.deviceId, _listener);
+  }
+
+  void _refresh() {
+    if (!_disposed && mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    // 只是进子页面看报警，不能把监控页的连接断掉 —— 只摘监听
+    _disposed = true;
+    CommManager.instance.offChange(widget.deviceId, _listener);
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    await AppStore.instance.load();
+    d = AppStore.instance.devices
+        .where((x) => x.id == widget.deviceId)
+        .firstOrNull;
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (d == null) {
+      return const Scaffold(
+          body: Center(
+              child: Text('设备不存在', style: TextStyle(color: cSub))));
+    }
+    final s = CommManager.instance.st(d!.id);
+    final connected = s.state == ConnState.connected;
+    bool active(AlarmItem a) => s.alarmRaw[a.id] == a.triggerHigh;
+    // 需求12：只列触发的报警，不触发的不显示（优先级 0 在最上、同优先级按 ID）
+    final triggered = d!.alarms.where(active).toList()
+      ..sort((x, y) {
+        final c = x.priority.compareTo(y.priority);
+        return c != 0 ? c : x.id.compareTo(y.id);
+      });
+    final activeCount = triggered.length;
+
+    return Scaffold(
+      backgroundColor: cBg,
+      appBar: AppBar(
+        backgroundColor: cBg, foregroundColor: cText, elevation: 0,
+        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('报警列表',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          Text('${d!.name} · 触发 $activeCount / 共 ${d!.alarms.length} 条',
+              style: const TextStyle(fontSize: 10.5, color: cSub)),
+        ]),
+      ),
+      body: d!.alarms.isEmpty
+          ? const Center(
+              child: Text('未导入报警表 · 在设备编辑页导入后此处显示报警',
+                  style: TextStyle(fontSize: 12, color: cDim)))
+          : Column(children: [
+              if (!connected)
+                _banner('未连接，报警状态不可用', cAmber)
+              else if (s.alarmRaw.isEmpty &&
+                  s.alarmSegFailed >= s.alarmSegTotal &&
+                  s.alarmSegFailed > 0)
+                _banner(
+                    s.alarmSegTotal == 0
+                        ? s.alarmFailDesc
+                        : '报警地址在 PLC 上读不到，已跳过'
+                            '（${s.alarmFailDesc}）· 请检查报警表地址与实际 PLC 是否一致',
+                    cAmber),
+              Expanded(
+                child: triggered.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 10, height: 10,
+                              decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: connected
+                                      ? cGreen
+                                      : const Color(0xFF3D464C)),
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                                connected
+                                    ? '当前无报警 · 已配置 ${d!.alarms.length} 条'
+                                    : '未连接，无法获取报警状态',
+                                style: const TextStyle(
+                                    fontSize: 12, color: cSub)),
+                            const SizedBox(height: 4),
+                            const Text('触发后自动出现在这里',
+                                style:
+                                    TextStyle(fontSize: 10.5, color: cDim)),
+                          ],
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+                        itemCount: triggered.length,
+                        itemBuilder: (_, i) =>
+                            _alarmTile(triggered[i], active(triggered[i]),
+                                connected, s),
+                      ),
+              ),
+            ]),
+    );
+  }
+
+  Widget _banner(String text, Color color) => Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(10),
+          decoration: _box(cCard, borderColor: color),
+          child: Text(text, style: TextStyle(fontSize: 11.5, color: color)),
+        ),
+      );
+
+  Widget _alarmTile(AlarmItem a, bool on, bool connected, DeviceStatus s) {
+    final read = connected && s.alarmRaw.containsKey(a.id);
+    final dotColor = !read
+        ? const Color(0xFF3D464C)
+        : (on ? cRed : cGreen);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(10, 9, 10, 9),
+      decoration: _box(cCard,
+          borderColor: on ? cRed : null),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(
+            margin: const EdgeInsets.only(top: 5),
+            width: 8, height: 8,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: dotColor)),
+        const SizedBox(width: 9),
+        Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(a.text,
+                  maxLines: 2, overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 12.5,
+                      color: on ? cRed : (read ? cText : cDim),
+                      fontWeight: on ? FontWeight.w600 : FontWeight.w400)),
+              const SizedBox(height: 3),
+              Text(
+                  'ID ${a.id} · 优先级 ${a.priority} · ${a.address}'
+                  ' · 触发值 ${a.triggerHigh ? 1 : 0}',
+                  style: const TextStyle(fontSize: 10, color: cDim)),
+            ])),
+        const SizedBox(width: 8),
+        Text(
+            !read ? '--' : (on ? '触发中' : '正常'),
+            style: TextStyle(
+                fontSize: 11,
+                color: !read ? cDim : (on ? cRed : cGreen))),
+      ]),
+    );
+  }
+}
+
 class MonitorScreen extends StatefulWidget {
   final String deviceId;
   const MonitorScreen({super.key, required this.deviceId});
@@ -1489,14 +1837,22 @@ class _MonitorScreenState extends State<MonitorScreen> {
   void initState() {
     super.initState();
     _load();
-    CommManager.instance.onChange(widget.deviceId, _refresh);
+    CommManager.instance.onChange(widget.deviceId, _listener);
   }
 
-  void _refresh() { if (mounted) setState(() {}); }
+  /// 页面销毁后断开通讯会同步触发一次刷新回调，这时不能再 setState
+  bool _disposed = false;
+
+  /// 保存同一个闭包引用，dispose 时才能从监听列表里摘掉
+  late final void Function() _listener = _refresh;
+
+  void _refresh() { if (!_disposed && mounted) setState(() {}); }
 
   @override
   void dispose() {
-    // 离开监控页（返回设备列表等）：停止该案例的通讯，不再后台轮询
+    // 离开监控页（返回设备列表等）：先摘掉监听，再停止该案例的通讯
+    _disposed = true;
+    CommManager.instance.offChange(widget.deviceId, _listener);
     final dd = d;
     if (dd != null) CommManager.instance.disconnect(dd);
     super.dispose();
@@ -1559,7 +1915,9 @@ class _MonitorScreenState extends State<MonitorScreen> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            if (s.state != ConnState.connected && s.message != '未连接')
+            if (s.message.isNotEmpty &&
+                s.message != '通讯正常' &&
+                s.message != '未连接')
               Padding(
                 padding: const EdgeInsets.only(bottom: 12),
                 child: Text(s.message, style: const TextStyle(fontSize: 12, color: cAmber)),
@@ -1579,10 +1937,17 @@ class _MonitorScreenState extends State<MonitorScreen> {
               ),
             // 未连接时不再替换整个画面，只在顶部提示 + 全控件置灰
             if (!connected) _offlineBanner(s),
+            // 报警行：显示在状态区上面，滚动展示所有触发的报警（未配置时显示提示）
+            _alarmRow(s, connected),
             ...[
               if (inputs.isNotEmpty) ...[
-                const Text('状态信号 · 只读显示，实时刷新',
-                    style: TextStyle(fontSize: 11, color: cDim, letterSpacing: 1)),
+                Row(children: [
+                  const Text('状态显示',
+                      style: TextStyle(fontSize: 11, color: cDim, letterSpacing: 1)),
+                  const Spacer(),
+                  // 报警灯：只做状态显示，地址为 1 亮红灯、0 亮绿色，未配置/未读到为灰
+                  _lampDot(s),
+                ]),
                 const SizedBox(height: 8),
                 GridView.count(
                   crossAxisCount: 2, shrinkWrap: true,
@@ -1682,6 +2047,128 @@ class _MonitorScreenState extends State<MonitorScreen> {
   }
 
   /// 未连接时的顶部提示条：画面照常显示，但所有控件置灰不可操作，这里给连接入口
+  /// 报警行（需求 19）：ID + 报警内容，按优先级排序（0 排最前），
+  /// 触发条件 = 报警位原始值 == 触发数值。滚动展示所有触发的报警。
+  Widget _alarmRow(DeviceStatus s, bool connected) {
+    void openList() => Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => AlarmListPage(deviceId: d!.id)));
+    // 未导入报警表：常驻占位行，提示去编辑页配置（点击同样进报警列表页）
+    if (d!.alarms.isEmpty) {
+      return GestureDetector(
+        onTap: openList,
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+          decoration: _box(cCard),
+          child: Row(children: [
+            const Icon(Icons.campaign_outlined, size: 15, color: cDim),
+            const SizedBox(width: 8),
+            const Expanded(
+              child: Text('未配置报警表 · 在设备编辑页导入后此处显示报警',
+                  style: TextStyle(fontSize: 11, color: cDim)),
+            ),
+            const Icon(Icons.chevron_right, size: 16, color: cDim),
+          ]),
+        ),
+      );
+    }
+    final active = d!.alarms
+        .where((a) => s.alarmRaw[a.id] == a.triggerHigh)
+        .toList()
+      ..sort((x, y) {
+        final c = x.priority.compareTo(y.priority);
+        return c != 0 ? c : x.id.compareTo(y.id);
+      });
+    return GestureDetector(
+      onTap: openList,
+      child: Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      decoration: _box(cCard),
+      child: Row(children: [
+        const Icon(Icons.campaign_outlined, size: 15, color: cSub),
+        const SizedBox(width: 8),
+        Expanded(
+          child: SizedBox(
+            height: 16,
+            child: !connected
+                ? const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('未连接，报警状态不可用',
+                        style: TextStyle(fontSize: 11, color: cDim)))
+                : s.alarmRaw.isEmpty
+                    ? Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                            s.alarmSegFailed >= s.alarmSegTotal &&
+                                    s.alarmSegFailed > 0
+                                ? (s.alarmSegTotal == 0
+                                    ? s.alarmFailDesc
+                                    : '报警地址在 PLC 上读不到，已跳过'
+                                        '（${s.alarmFailDesc}）· 请检查报警表地址与实际 PLC 是否一致')
+                                : '读取报警中…',
+                            style: TextStyle(
+                                fontSize: 11,
+                                color: s.alarmSegFailed >= s.alarmSegTotal &&
+                                        s.alarmSegFailed > 0
+                                    ? cAmber
+                                    : cDim)))
+                    : active.isEmpty
+                        ? Row(children: [
+                            Container(width: 6, height: 6,
+                                decoration: const BoxDecoration(
+                                    shape: BoxShape.circle, color: cGreenDot)),
+                            const SizedBox(width: 6),
+                            const Text('无报警',
+                                style: TextStyle(fontSize: 11.5, color: cGreen)),
+                          ])
+                        : _MarqueeText(
+                            key: ValueKey(
+                                'alarm_${active.map((a) => a.id).join(",")}'),
+                            text: active
+                                .map((a) => '${a.id}　${a.text}')
+                                .join('　　◆　　'),
+                            style: const TextStyle(
+                                fontSize: 11.5, color: cRed),
+                          ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text('${active.length}/${d!.alarms.length}',
+            style: const TextStyle(fontSize: 10, color: cDim)),
+        const Icon(Icons.chevron_right, size: 16, color: cDim),
+      ]),
+    ),
+    );
+  }
+
+  /// 报警灯（需求 21）：只做状态显示 —— 地址为 1 亮红灯，0 亮绿色，未读到为灰
+  Widget _lampDot(DeviceStatus s) {
+    final v = s.lampOn;
+    final connected = s.state == ConnState.connected;
+    final lit = connected && v == true;
+    final color = !connected || v == null
+        ? const Color(0xFF3D464C)
+        : (v! ? cRed : cGreen);
+    return Row(children: [
+      const Text('报警灯', style: TextStyle(fontSize: 10, color: cDim)),
+      const SizedBox(width: 5),
+      Container(
+        key: const ValueKey('alarm_lamp_dot'),
+        width: 14,
+        height: 14,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: color,
+          border: Border.all(color: const Color(0xFF333B40)),
+          boxShadow: lit
+              ? [BoxShadow(color: cRed.withValues(alpha: .55), blurRadius: 8, spreadRadius: 1)]
+              : null,
+        ),
+      ),
+    ]);
+  }
+
   Widget _offlineBanner(DeviceStatus s) {
     final failed = s.state == ConnState.error;
     final busy = s.state == ConnState.connecting || connecting;
@@ -1768,6 +2255,80 @@ class _MonitorScreenState extends State<MonitorScreen> {
 }
 
 /// 长按点动按钮：按住写 ON，松开写 OFF
+/// 报警文字跑马灯：内容重复两份，从右往左循环滚动。
+/// 内容不超过可视宽度时 maxScrollExtent 为 0，静止显示。
+class _MarqueeText extends StatefulWidget {
+  final String text;
+  final TextStyle style;
+  const _MarqueeText({super.key, required this.text, required this.style});
+
+  @override
+  State<_MarqueeText> createState() => _MarqueeTextState();
+}
+
+class _MarqueeTextState extends State<_MarqueeText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _anim =
+      AnimationController(vsync: this, duration: const Duration(seconds: 18));
+  late final ScrollController _sc = ScrollController();
+  // 恒定速度：px/秒。按内容实际宽度换算总时长，长短报警滚动速度一致。
+  static const double _speedPxPerSec = 40;
+
+  @override
+  void initState() {
+    super.initState();
+    // 首帧布局后按内容宽度定速，再开始滚动（保证第一轮就是慢速）
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _tune();
+      _anim.repeat();
+    });
+    _anim.addListener(() {
+      if (!mounted || !_sc.hasClients) return;
+      final max = _sc.position.maxScrollExtent;
+      if (max <= 0) return;
+      _sc.jumpTo(_anim.value * max);
+    });
+  }
+
+  void _tune() {
+    if (!_sc.hasClients) return;
+    final max = _sc.position.maxScrollExtent;
+    if (max <= 0) return;
+    final ms = (max / _speedPxPerSec * 1000).round().clamp(8000, 60000);
+    _anim.duration = Duration(milliseconds: ms);
+  }
+
+  @override
+  void didUpdateWidget(covariant _MarqueeText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 报警内容变化后按新宽度重新定速
+    if (oldWidget.text != widget.text) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _tune();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _anim.dispose();
+    _sc.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      controller: _sc,
+      scrollDirection: Axis.horizontal,
+      physics: const NeverScrollableScrollPhysics(),
+      child: Text('${widget.text}　　　　${widget.text}',
+          style: widget.style, maxLines: 1),
+    );
+  }
+}
+
 class JogButton extends StatefulWidget {
   final Device device;
   final PointItem point;

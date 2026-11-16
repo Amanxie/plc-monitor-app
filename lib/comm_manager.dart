@@ -17,6 +17,17 @@ class DeviceStatus {
   /// pointId -> 变量值（bool / int / double）
   Map<String, Object?> values = {};
 
+  /// 报警位原始值：报警 ID -> 当前位值（与 AlarmItem.triggerHigh 比较得是否报警）
+  Map<int, bool> alarmRaw = {};
+
+  /// 报警灯位值（null = 未配置 / 未读到）
+  bool? lampOn;
+
+  /// 报警采集诊断：本轮扫描的字节段总数 / 其中读不到的段数 / 读不到段的位置描述
+  int alarmSegTotal = 0;
+  int alarmSegFailed = 0;
+  String alarmFailDesc = '';
+
   /// 最近一次写入失败的说明（长按点动用）
   String? writeError;
 
@@ -47,6 +58,11 @@ class CommManager {
     _listeners.putIfAbsent(deviceId, () => []).add(fn);
   }
 
+  /// 摘掉监听（页面销毁时必须调，否则回调会打到已销毁的页面）
+  void offChange(String deviceId, void Function() fn) {
+    _listeners[deviceId]?.remove(fn);
+  }
+
   /// 全局连接状态变化监听（设备列表页用）
   void onAnyChange(void Function() fn) => _globalListeners.add(fn);
 
@@ -54,6 +70,9 @@ class CommManager {
     for (final fn in _listeners[deviceId] ?? const []) fn();
     for (final fn in _globalListeners) fn();
   }
+
+  /// 外部改了状态对象后手动触发界面刷新（测试 / 特殊场景用）
+  void notify(String deviceId) => _notify(deviceId);
 
   bool _isModbus(Device d) => d.protocol == Protocol.modbusTcp;
 
@@ -93,6 +112,8 @@ class CommManager {
     // 先同步更新状态，返回设备页时卡片能立即显示"未连接"
     _pollers[d.id]?.cancel();
     _pollers[d.id] = null;
+    _alarmTimers.remove(d.id)?.cancel();
+    _alarmPolling.remove(d.id);
     _polling[d.id] = false;
     final s = st(d.id);
     s.state = ConnState.disconnected;
@@ -113,6 +134,10 @@ class CommManager {
     _clients.remove(deviceId);
     status.remove(deviceId);
     _listeners.remove(deviceId);
+    _alarmTimers.remove(deviceId)?.cancel();
+    _alarmPolling.remove(deviceId);
+    _badAddrs.remove(deviceId);
+    _alarmFailCnt.removeWhere((k, _) => k.startsWith('$deviceId/'));
   }
 
   // ------------------------------------------------------------ 轮询
@@ -120,6 +145,12 @@ class CommManager {
   void _startPoll(Device d) {
     _pollers[d.id]?.cancel();
     _pollers[d.id] = Timer(const Duration(milliseconds: 200), () => _pollOnce(d));
+    // 报警独立 1 秒节奏：连上先立即采一次，之后每秒一次，不跟主轮询抢时间
+    _alarmTimers[d.id]?.cancel();
+    _pollAlarms(d).catchError((_) {});
+    _alarmTimers[d.id] = Timer.periodic(const Duration(seconds: 1), (_) {
+      _pollAlarms(d).catchError((_) {});
+    });
   }
 
   Future<void> _pollOnce(Device d) async {
@@ -131,38 +162,60 @@ class CommManager {
       if (c == null) return;
       // 轮询案例自己的点位：模板删了、改了都不影响通讯
       final points = d.points.where((p) => p.type != PointType.image).toList();
-      if (points.isEmpty) return;
+      // 只有「没有任何点位、也没有报警」时才跳过；只配了报警的案例照样要采
+      final hasAlarms = d.alarms.isNotEmpty || d.alarmLamp.trim().isNotEmpty;
+      if (points.isEmpty && !hasAlarms) return;
 
       final t0 = DateTime.now();
-      List<Object?> vals;
-      if (_isModbus(d)) {
-        final mbp = points
-            .map((p) => mb.parseModbusAddress(AppStore.instance.addrOf(d, p)))
-            .toList();
-        if (mbp.any((e) => e == null)) throw Exception('存在无法解析的地址');
-        final bits =
-            await (c as mb.ModbusTcpClient).readBits(mbp.cast<mb.MbPoint>());
-        vals = List<Object?>.from(bits);
-      } else {
-        final items = <s7.S7ReadItem>[];
-        for (final p in points) {
-          final addr = AppStore.instance.addrOf(d, p);
-          final sp = s7.parseS7Address(addr);
-          if (sp == null) {
-            throw Exception('地址「$addr」无法解析（支持 I0.0 / M10.0 / MW10 / DB1.DBW0 等写法）');
+      List<Object?> vals = const [];
+      String badMsg = '';
+      if (points.isNotEmpty) {
+        if (_isModbus(d)) {
+          final mbp = points
+              .map((p) => mb.parseModbusAddress(AppStore.instance.addrOf(d, p)))
+              .toList();
+          if (mbp.any((e) => e == null)) throw Exception('存在无法解析的地址');
+          final bits =
+              await (c as mb.ModbusTcpClient).readBits(mbp.cast<mb.MbPoint>());
+          vals = List<Object?>.from(bits);
+        } else {
+          // 坏点位（PLC 返回地址不存在）跳过，之后不再对它发通讯请求
+          final bad = _badAddrs.putIfAbsent(d.id, () => <String>{});
+          final pairs = <(PointItem, s7.S7ReadItem)>[];
+          final badNames = <String>[]; // 本轮被跳过的点位（地址解析失败的也算）
+          for (final p in points) {
+            final addr = AppStore.instance.addrOf(d, p);
+            if (bad.contains(addr)) continue;
+            final sp = s7.parseS7Address(addr);
+            if (sp == null) {
+              badNames.add('「${p.name}」$addr 无法解析');
+              continue;
+            }
+            pairs.add((p, s7.S7ReadItem(sp, p.dataType)));
           }
-          items.add(s7.S7ReadItem(sp, p.dataType));
+          if (pairs.isNotEmpty) {
+            final r = await (c as s7.S7Client)
+                .readValues(pairs.map((e) => e.$2).toList());
+            for (int i = 0; i < pairs.length && i < r.length; i++) {
+              s.values[pairs[i].$1.id] = r[i];
+            }
+            // PLC 回「地址不存在」的点位：记住地址，下轮起不再读
+            bad.addAll((c as s7.S7Client).badAddresses);
+          }
+          if (badNames.isNotEmpty || bad.isNotEmpty) {
+            final shown = [...badNames, ...bad].take(3).join('、');
+            final n = badNames.length + bad.length;
+            badMsg = '通讯正常 · $n 个点位 PLC 上读不到，已跳过：$shown';
+          }
         }
-        vals = await (c as s7.S7Client).readValues(items);
       }
       s.latencyMs = DateTime.now().difference(t0).inMilliseconds;
       for (int i = 0; i < points.length && i < vals.length; i++) {
         s.values[points[i].id] = vals[i];
       }
-      if (s.state != ConnState.connected || s.message != '通讯正常') {
-        s.state = ConnState.connected;
-        s.message = '通讯正常';
-      }
+      // 报警采集由独立 1 秒定时器驱动（见 _startPoll），这里不再触发
+      s.state = ConnState.connected;
+      if (s.message != badMsg) s.message = badMsg.isEmpty ? '通讯正常' : badMsg;
     } catch (e) {
       s.state = ConnState.error;
       s.message = _describe(e);
@@ -186,6 +239,143 @@ class CommManager {
       _pollers[d.id] = Timer(const Duration(milliseconds: 400), () => _pollOnce(d));
     }
   }
+
+  // ------------------------------------------------------------ 报警采集
+
+  /// 报警采集独立定时器（deviceId → Timer），每秒触发一次
+  final Map<String, Timer> _alarmTimers = {};
+
+  /// 正在采报警的设备（上一轮没读完时跳过本轮，避免请求堆积）
+  final Set<String> _alarmPolling = {};
+
+  /// 坏点位地址缓存（deviceId → 地址集）：PLC 明确回答「地址不存在」的点位，
+  /// 之后轮询直接跳过，不再向 PLC 发通讯请求；点位改地址后自然失效。
+  final Map<String, Set<String>> _badAddrs = {};
+
+  /// 报警字节段连续失败计数（deviceId/db/area/startByte → 次数），
+  /// 连续 3 次失败（地址超界等确定性错误）拉黑，之后该段不再通讯
+  final Map<String, int> _alarmFailCnt = {};
+
+  /// 批量采集报警位 + 报警灯位（只支持 S7 / PLCSIM；报警表是 S7 地址格式）
+  ///
+  /// 优化：同一区（DB 号 / M 区）内把连续的字节段合并成一整块读，
+  /// 268 条报警通常只需要 3~4 次报文交互，而不是逐位读 268 次。
+  Future<void> _pollAlarms(Device d) async {
+    if (_alarmPolling.contains(d.id)) return; // 上一轮还没读完，跳过本轮
+    _alarmPolling.add(d.id);
+    try {
+      await _pollAlarmsImpl(d);
+    } finally {
+      _alarmPolling.remove(d.id);
+    }
+  }
+
+  Future<void> _pollAlarmsImpl(Device d) async {
+    final s0 = st(d.id);
+    if (_isModbus(d)) {
+      // Modbus 设备：报警表是 S7 地址格式，明确告知不支持，避免一直「读取报警中…」
+      s0.alarmSegTotal = 0;
+      s0.alarmSegFailed = 1;
+      s0.alarmFailDesc = 'Modbus 设备暂不支持报警采集';
+      return;
+    }
+    final c = _clients[d.id];
+    if (c == null) return;
+
+    final s = st(d.id);
+    // 收集要读的位：报警灯（key = -1）+ 每条报警（key = 报警 ID）
+    final wanted = <(s7.S7Point, int, bool)>[]; // (地址解析, key, 是否报警灯)
+    int unparsed = 0; // 无法解析的地址条数
+    if (d.alarmLamp.trim().isNotEmpty) {
+      final p = s7.parseS7Address(d.alarmLamp.trim());
+      if (p != null) {
+        wanted.add((p, -1, true));
+      } else {
+        unparsed++;
+      }
+    }
+    for (final a in d.alarms) {
+      final p = s7.parseS7Address(a.address);
+      if (p != null) {
+        wanted.add((p, a.id, false));
+      } else {
+        unparsed++;
+      }
+    }
+    if (wanted.isEmpty) {
+      // 一条有效地址都没有：给出明确诊断，界面不再停在「读取报警中…」
+      s.alarmSegTotal = 0;
+      s.alarmSegFailed = 1;
+      s.alarmFailDesc = unparsed > 0
+          ? '${d.alarms.length} 条报警地址全部无法解析，请检查报警表格式'
+          : '无有效报警地址';
+      return;
+    }
+
+    // 按 (db, area) 分组
+    final groups = <String, List<(s7.S7Point, int, bool)>>{};
+    for (final w in wanted) {
+      groups.putIfAbsent('${w.$1.db}/${w.$1.area}', () => []).add(w);
+    }
+
+    int segTotal = 0, segFailed = 0;
+    final failedDesc = <String>[];
+    for (final items in groups.values) {
+      items.sort((x, y) => x.$1.byteIndex.compareTo(y.$1.byteIndex));
+      // 合并连续字节段：间隔 ≤ 4 字节算连续，每段最多 120 字节
+      int i = 0;
+      while (i < items.length) {
+        int j = i;
+        while (j + 1 < items.length &&
+            items[j + 1].$1.byteIndex - items[i].$1.byteIndex <= 120 &&
+            items[j + 1].$1.byteIndex - items[j].$1.byteIndex <= 4) {
+          j++;
+        }
+        final run = items.sublist(i, j + 1);
+        final startByte = run.first.$1.byteIndex;
+        final count = run.last.$1.byteIndex - startByte + 1;
+        final sp = run.first.$1;
+        final blockStart = s7.S7Point(sp.area, sp.db, startByte, 0);
+        final segKey = '${d.id}/${sp.db}/${sp.area}/$startByte';
+        segTotal++;
+        // 拉黑过的段不再通讯；其他段照常读
+        if (_alarmFailCnt[segKey] != null && _alarmFailCnt[segKey]! >= 3) {
+          segFailed++;
+          failedDesc.add(_segDesc(sp));
+          i = j + 1;
+          continue;
+        }
+        try {
+          final bytes =
+              await (c as s7.S7Client).readBytes(blockStart, count);
+          _alarmFailCnt.remove(segKey);
+          for (final (p, key, isLamp) in run) {
+            final b = bytes[p.byteIndex - startByte];
+            final v = decodeBit([b], p.bitIndex);
+            if (isLamp) {
+              s.lampOn = v;
+            } else {
+              s.alarmRaw[key] = v;
+            }
+          }
+        } catch (_) {
+          // 连续 3 次失败（如 DB 块不存在 / 地址超界）拉黑该段，不再通讯
+          _alarmFailCnt[segKey] = (_alarmFailCnt[segKey] ?? 0) + 1;
+          segFailed++;
+          if (failedDesc.length < 4) failedDesc.add(_segDesc(sp));
+        }
+        i = j + 1;
+      }
+    }
+    // 诊断结果交给界面：全部段都读不到时报警行给出明确原因
+    s.alarmSegTotal = segTotal;
+    s.alarmSegFailed = segFailed;
+    s.alarmFailDesc = failedDesc.toSet().take(3).join('、');
+  }
+
+  /// 段位置的人类可读描述（如 DB91 / M 区）
+  String _segDesc(s7.S7Point p) =>
+      p.area == 0x84 ? 'DB${p.db}' : (p.area == 0x83 ? 'M 区' : '区${p.area}');
 
   // ------------------------------------------------------------ 写位
 

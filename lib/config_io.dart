@@ -103,9 +103,10 @@ class ConfigFileIo {
   }
 
   /// 系统选文件（能读下载、微信保存目录等任意位置）
-  static Future<({String name, String content})?> pick() async {
+  static Future<({String name, String content})?> pick(
+      {String mime = 'application/json'}) async {
     try {
-      final r = await _ch.invokeMethod<Map>('pickFile', {'mime': 'application/json'});
+      final r = await _ch.invokeMethod<Map>('pickFile', {'mime': mime});
       if (r == null) return null;
       return (
         name: (r['name'] as String?) ?? '',

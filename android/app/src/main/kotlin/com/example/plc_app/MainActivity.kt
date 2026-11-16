@@ -14,6 +14,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.nio.charset.Charset
 import java.security.MessageDigest
 
 /**
@@ -142,7 +143,9 @@ class MainActivity : FlutterActivity() {
                 type = "*/*"
                 putExtra(
                     Intent.EXTRA_MIME_TYPES,
-                    arrayOf("application/json", "text/plain", "application/octet-stream")
+                    // text/* 覆盖 text/plain、text/csv、tab-separated-values 等
+                    // （csv 之前被漏掉，选文件时一直灰色点不动）；xls 是二进制读不了，不放行
+                    arrayOf("text/*", "application/json", "application/octet-stream")
                 )
             }
             pendingPick = result
@@ -217,10 +220,36 @@ class MainActivity : FlutterActivity() {
             contentResolver.openInputStream(uri)?.use { input ->
                 val bytes = input.readBytes()
                 // 简单防呆：超过 8MB 的当二进制文件拒绝
-                if (bytes.size > 8 * 1024 * 1024) null else String(bytes, Charsets.UTF_8)
+                if (bytes.size > 8 * 1024 * 1024) null else decodeText(bytes)
             }
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /// 自动识别编码：
+    ///   1. BOM 优先（UTF-8 / UTF-16 LE·BE）
+    ///   2. UTF-8 严格校验，失败按 GB18030 解（兼容 GBK / GB2312）——
+    ///      Excel 默认「CSV(ANSI)」存的中文就是 GBK，直接按 UTF-8 解会满屏乱码
+    private fun decodeText(bytes: ByteArray): String {
+        if (bytes.size >= 3 && bytes[0] == 0xEF.toByte() &&
+            bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte()) {
+            return String(bytes, 3, bytes.size - 3, Charsets.UTF_8)
+        }
+        if (bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte()) {
+            return String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE)
+        }
+        if (bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte()) {
+            return String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE)
+        }
+        return try {
+            Charsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                .decode(java.nio.ByteBuffer.wrap(bytes))
+                .toString()
+        } catch (_: Exception) {
+            String(bytes, Charset.forName("GB18030"))
         }
     }
 
