@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
@@ -12,8 +13,8 @@ import 'config_io.dart';
 import 'update.dart';
 
 /// 软件版本（底部展示，同时写入构建号）
-const kAppVersion = '1.8.5';
-const kAppBuild = '19';
+const kAppVersion = '1.9.0';
+const kAppBuild = '20';
 const kBrand = '谢工爱搞自动化';
 
 Future<void> main() async {
@@ -643,11 +644,15 @@ class _WizardScreenState extends State<WizardScreen> {
   final cmtText = <String, String>{};
   /// 向导内暂存的类型选择（点「完成」时才写回模板）
   final typeSel = <String, VarType>{};
+  /// 向导内画布选中的控件 id（页面级，滚动不丢）
+  String? editSelId;
   String plcType = 'S7-1200';
   Protocol protocol = Protocol.s7;
   Device? editing;
-  /// 报警灯地址（向导内暂存，保存时写入案例）
-  final lampCtrl = TextEditingController();
+  /// 状态灯三色地址（向导内暂存，保存时写入案例；需求 27）
+  final lampRedC = TextEditingController();
+  final lampYellowC = TextEditingController();
+  final lampGreenC = TextEditingController();
   /// 向导内暂存的报警表（保存时写入案例）
   List<AlarmItem> draftAlarms = [];
 
@@ -677,8 +682,10 @@ class _WizardScreenState extends State<WizardScreen> {
         slotCtrl.text = editing!.slot.toString();
         plcType = editing!.plcType;
         protocol = editing!.protocol;
-        // 报警灯与报警表随案例带入
-        lampCtrl.text = editing!.alarmLamp;
+        // 状态灯与报警表随案例带入（旧 alarmLamp 迁到红灯）
+        lampRedC.text = editing!.lampRed.isEmpty ? editing!.alarmLamp : editing!.lampRed;
+        lampYellowC.text = editing!.lampYellow;
+        lampGreenC.text = editing!.lampGreen;
         draftAlarms = editing!.alarms.map((a) => a.clone()).toList();
         // 编辑已有案例：模板已定，直接进地址步，不再让用户重选模板
         step = 1;
@@ -691,6 +698,11 @@ class _WizardScreenState extends State<WizardScreen> {
   bool get isEdit => editing != null;
   int get pageCount => isEdit ? 2 : 3;
   int get pageIndex => (isEdit ? step - 1 : step).clamp(0, pageCount - 1);
+
+  /// 向导导航（需求 26）：底部不再放「下一步」，改为顶部向上 / 向下图标
+  String get _nextLabel => isEdit
+      ? (pageIndex == pageCount - 1 ? '保存修改' : '下一步')
+      : (step < 2 ? '下一步' : '完成并进入监控');
 
   @override
   Widget build(BuildContext context) {
@@ -707,10 +719,27 @@ class _WizardScreenState extends State<WizardScreen> {
             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
         actions: [
           Center(child: Padding(
-            padding: const EdgeInsets.only(right: 16),
+            padding: const EdgeInsets.only(right: 4),
             child: Text('步骤 ${idx + 1} / $pageCount',
                 style: const TextStyle(fontSize: 12, color: cDim)),
           )),
+          // 向下：下一步 / 保存
+          IconButton(
+            tooltip: _nextLabel,
+            icon: Icon(idx == pageCount - 1
+                    ? Icons.check_circle_outline
+                    : Icons.arrow_downward,
+                size: 20, color: cAccent),
+            onPressed: _next,
+          ),
+          // 向上：上一步
+          if (idx > 0)
+            IconButton(
+              tooltip: '上一步',
+              icon: const Icon(Icons.arrow_upward, size: 20, color: cSub),
+              onPressed: () => setState(() => step--),
+            ),
+          const SizedBox(width: 6),
         ],
       ),
       body: SafeArea(
@@ -724,33 +753,6 @@ class _WizardScreenState extends State<WizardScreen> {
             ]),
           ),
           Expanded(child: pages[idx]),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
-            child: Row(children: [
-              if (idx > 0)
-                OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: cLine),
-                      minimumSize: const Size(96, 52),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))),
-                  onPressed: () => setState(() => step--),
-                  child: const Text('上一步', style: TextStyle(color: cSub)),
-                ),
-              const SizedBox(width: 10),
-              Expanded(child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: cAccent, foregroundColor: cAccentText,
-                    minimumSize: const Size(0, 52),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))),
-                onPressed: _next,
-                child: Text(
-                    isEdit
-                        ? (idx == pageCount - 1 ? '保存修改' : '下一步')
-                        : (step < 2 ? '下一步' : '完成并进入监控'),
-                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-              )),
-            ]),
-          ),
         ]),
       ),
     );
@@ -849,28 +851,44 @@ class _WizardScreenState extends State<WizardScreen> {
         const SizedBox(height: 6),
         Text('${selected!.name} · ${pts.length} 个控件 · 改动只作用于本案例，不写回模板',
             style: const TextStyle(fontSize: 12, color: cSub)),
+        const SizedBox(height: 12),
+        // 监控操作区域（需求 23/24）：画布 + 选中属性 + 预览
+        LayoutEditor(
+          points: selected!.points,
+          selectedId: editSelId,
+          onSelect: (id) => setState(() => editSelId = id),
+          onChanged: () => setState(() {}),
+          onEditDetail: (p) => _showPointEditor(existing: p),
+          onAddButton: () => _showPointEditor(presetButton: true),
+          onAddStatus: () => _showPointEditor(presetButton: false),
+          onAddCross: _addCross,
+        ),
         const SizedBox(height: 16),
         _addrGroup('状态显示 · 只读，用户不能操作（I / Q 区只能放这里）', statusPts),
         const SizedBox(height: 14),
         _addrGroup('输入域 · 用户可写 0/1 或数值（M 区 / DB 区）', fieldPts),
         const SizedBox(height: 14),
         _addrGroup('点动按钮 · 按下置 1，松开置 0（M 区 / DB 区的 BOOL）', outputs),
-        const SizedBox(height: 4),
-        Row(children: [
-          Expanded(
-            child: _addCtrlBtn('+ 按钮控件', Icons.touch_app_outlined,
-                () => _showPointEditor(presetButton: true)),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _addCtrlBtn('+ 状态控件', Icons.circle_outlined,
-                () => _showPointEditor(presetButton: false)),
-          ),
-        ]),
         const SizedBox(height: 20),
         _alarmGroup(),
       ],
     );
+  }
+
+  /// 新增十字按钮控件（需求 24-2）：四个脚默认显示 前 / 后 / 左 / 右
+  void _addCross() {
+    if (selected == null) return;
+    setState(() {
+      selected!.points.add(PointItem(
+        id: 'cx_${DateTime.now().millisecondsSinceEpoch}',
+        name: '十字按钮',
+        address: 'M0.0',
+        type: PointType.output,
+        writable: false,
+        ctrl: 'cross',
+      ));
+    });
+    _toast('已添加十字按钮：在画布中选中它，填写前 / 后 / 左 / 右四个脚的 M 区地址');
   }
 
   /// 报警组：报警灯地址 + 报警表导入（只随本案例保存）
@@ -899,15 +917,17 @@ class _WizardScreenState extends State<WizardScreen> {
                   color: draftAlarms.isEmpty ? cDim : cSub)),
         ]),
         const SizedBox(height: 10),
-        const Text('报警灯 · 状态显示，地址为 1 亮红灯、0 亮绿色',
+        const Text('状态灯 · 三色独立地址，地址值为 1 该颜色亮（需求 27）',
             style: TextStyle(fontSize: 10.5, color: cSub)),
         const SizedBox(height: 6),
-        AddressField(
-          key: const ValueKey('alarm_lamp'),
-          initial: lampCtrl.text,
-          type: VarType.boolean,
-          onChanged: (a) => lampCtrl.text = a,
-        ),
+        _lampAddrRow('红', lampRedC),
+        const SizedBox(height: 6),
+        _lampAddrRow('黄', lampYellowC),
+        const SizedBox(height: 6),
+        _lampAddrRow('绿', lampGreenC),
+        const SizedBox(height: 4),
+        const Text('某色地址留空 = 该色不参与显示；三色都为 0 时灯为灰色。',
+            style: TextStyle(fontSize: 9.5, color: cDim)),
         const SizedBox(height: 12),
         Align(
           alignment: Alignment.centerRight,
@@ -931,6 +951,30 @@ class _WizardScreenState extends State<WizardScreen> {
             style: TextStyle(fontSize: 9.5, color: cDim)),
       ]),
     );
+  }
+
+  /// 状态灯一行的紧凑布局：色点 + AddressField
+  Widget _lampAddrRow(String color, TextEditingController c) {
+    final dot = {'红': cRed, '黄': cAmber, '绿': cGreen}[color]!;
+    return Row(children: [
+      Container(
+        width: 12, height: 12,
+        decoration: BoxDecoration(shape: BoxShape.circle, color: dot),
+      ),
+      const SizedBox(width: 8),
+      SizedBox(
+        width: 22,
+        child: Text('$color色', style: const TextStyle(fontSize: 10.5, color: cSub)),
+      ),
+      Expanded(
+        child: AddressField(
+          key: ValueKey('lamp_$color'),
+          initial: c.text,
+          type: VarType.boolean,
+          onChanged: (a) => c.text = a,
+        ),
+      ),
+    ]);
   }
 
   /// 粘贴导入报警表：Excel 里选中 A~F 列复制 → 粘贴进来；
@@ -1022,23 +1066,6 @@ class _WizardScreenState extends State<WizardScreen> {
     _toast(errors.isEmpty
         ? '已导入 ${parsed.length} 条报警'
         : '已导入 ${parsed.length} 条，${errors.length} 行被跳过：${errors.first}');
-  }
-
-  Widget _addCtrlBtn(String label, IconData icon, VoidCallback onTap) {
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        height: 44,
-        decoration: BoxDecoration(
-            color: const Color(0xFF161A1D),
-            border: Border.all(color: const Color(0xFF333B40))),
-        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(icon, size: 15, color: cSub),
-          const SizedBox(width: 6),
-          Text(label, style: const TextStyle(fontSize: 12, color: cSub)),
-        ]),
-      ),
-    );
   }
 
   /// 新增 / 编辑一个控件：先定性质（状态显示 / 输入域 / 点动按钮），再填名称、类型、地址
@@ -1604,8 +1631,11 @@ class _WizardScreenState extends State<WizardScreen> {
       saved.add(np);
     }
     d.points = saved;
-    // 报警灯与报警表随案例保存
-    d.alarmLamp = lampCtrl.text.trim();
+    // 状态灯与报警表随案例保存
+    d.lampRed = lampRedC.text.trim();
+    d.lampYellow = lampYellowC.text.trim();
+    d.lampGreen = lampGreenC.text.trim();
+    d.alarmLamp = d.lampRed; // 兼容字段同步
     d.alarms = draftAlarms.map((a) => a.clone()).toList();
     d.imagePath = selected!.imagePath;
     d.sourceTemplate = selected!.name;
@@ -1636,8 +1666,1190 @@ class _WizardScreenState extends State<WizardScreen> {
 
   @override
   void dispose() {
-    lampCtrl.dispose();
+    lampRedC.dispose();
+    lampYellowC.dispose();
+    lampGreenC.dispose();
     super.dispose();
+  }
+}
+
+// ================== 监控画布（需求 23/24） ==================
+///
+/// 监控页、编辑器画布、预览页共用一套渲染：
+/// 控件按 x/y/w/h（设计坐标，画布宽 [kCanvasW]）绝对定位，
+/// 整体按屏宽等比缩放 —— 控件内文字大小不随宽高变化（需求 23-5）。
+class MonitorCanvas extends StatelessWidget {
+  final List<PointItem> points;
+  final Device? device;        // null = 预览（无实时值、不可操作）
+  final DeviceStatus? status;  // null = 预览
+  final bool connected;
+  /// 预览 / 编辑模式下可拖动控件改位置（需求 23-7）
+  final bool draggable;
+  final String? selectedId;
+  final void Function(PointItem)? onTapCtrl;
+  /// 轻点画布空白处 = 取消选中（仅编辑器 / 预览传）
+  final VoidCallback? onTapBlank;
+  final VoidCallback? onLayoutChanged;
+  /// 地址行仅编辑器显示（需求 13）：预览页与正常监控页不显示
+  final bool showAddr;
+
+  const MonitorCanvas({
+    super.key,
+    required this.points,
+    this.device,
+    this.status,
+    this.connected = false,
+    this.draggable = false,
+    this.selectedId,
+    this.onTapCtrl,
+    this.onTapBlank,
+    this.onLayoutChanged,
+    this.showAddr = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, box) {
+      // 进入渲染前兜底：老数据没有尺寸/位置的补默认值
+      normalizeLayout(points);
+      final scale = box.maxWidth / kCanvasW;
+      final h = canvasHeight(points);
+      final widgets = <Widget>[];
+      for (final p in points) {
+        if (p.type == PointType.image || !p.visible) continue;
+        final sel = draggable && selectedId == p.id;
+        Widget w = _ctrlOf(context, p);
+        if (sel) {
+          // 需求 8：选中边框加粗，四边内缘为拖拽条——
+          // 按住左右边左右滑改宽度，按住上下边上下滑改高度
+          w = Stack(clipBehavior: Clip.none, children: [
+            Positioned.fill(child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: cAccent, width: 2.5),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: w,
+            )),
+            Positioned(left: 0, top: 0, bottom: 0, width: 12,
+                child: _edgeGesture(p, _Edge.left, scale)),
+            Positioned(right: 0, top: 0, bottom: 0, width: 12,
+                child: _edgeGesture(p, _Edge.right, scale)),
+            Positioned(left: 12, right: 12, top: 0, height: 12,
+                child: _edgeGesture(p, _Edge.top, scale)),
+            Positioned(left: 12, right: 12, bottom: 0, height: 12,
+                child: _edgeGesture(p, _Edge.bottom, scale)),
+          ]);
+        }
+        final positioned = Positioned(
+          left: p.x, top: p.y, width: p.w, height: p.h,
+          child: draggable
+              ? (sel
+                  // 选中态：按下即接管拖动，四边内缘拖拽条改宽高（需求 8）
+                  ? _dragGesture(w, p, scale, h)
+                  // 未选中态：双击 / 长按选中；不用按下即接管手势，
+                  // 这样控件区域也能正常滚动页面
+                  : GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onDoubleTap: () => onTapCtrl?.call(p),
+                      onLongPress: () => onTapCtrl?.call(p),
+                      child: w,
+                    ))
+              : w,
+        );
+        widgets.add(positioned);
+      }
+      // 画布空白处轻点 = 取消选中（需求：点击控件以外区域不选中）。
+      // 用裸 Listener（不进手势竞技场），否则它的 Tap 会在第一击 up 时
+      // 抢赢双击识别器，导致控件永远无法双击选中。控件自身吸收点击时
+      // Stack 命中测试在控件处停止，不会到达这里。
+      if (draggable && onTapBlank != null) {
+        widgets.insert(
+            0,
+            Positioned.fill(
+              child: _BlankTapDetector(onTapBlank: onTapBlank!),
+            ));
+      }
+      return SizedBox(
+        width: box.maxWidth,
+        height: h * scale,
+        child: FittedBox(
+          fit: BoxFit.fill,
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: kCanvasW,
+            height: h,
+            child: Stack(clipBehavior: Clip.none, children: widgets),
+          ),
+        ),
+      );
+    });
+  }
+
+  /// 选中控件的拖动手势：按下即接管 + 拖动移动位置。
+  /// 只有「已选中」的控件才挂这个识别器（面积小，牺牲局部滚动可接受）；
+  /// 未选中控件用普通 双击/长按 选中，不参与此识别器——这样控件上
+  /// 也能正常滚动页面。页面主体是 ListView，垂直拖动必须压过列表滚动，
+  /// 因此用 _InstantDragRecognizer：down 立即 accept。
+  Widget _dragGesture(Widget w, PointItem p, double scale, double h) {
+    return RawGestureDetector(
+      behavior: HitTestBehavior.opaque,
+      gestures: {
+        _InstantDragRecognizer:
+            GestureRecognizerFactoryWithHandlers<_InstantDragRecognizer>(
+          () {
+            final drag = _CanvasItemDrag(p, scale, h, onLayoutChanged);
+            return _InstantDragRecognizer(
+              onUpdate: (d) => drag.update(DragUpdateDetails(
+                  delta: d, globalPosition: Offset.zero)),
+              onEnd: () => drag.end(DragEndDetails()),
+              onCancel: () => drag.cancel(),
+            );
+          },
+          (_) {},
+        ),
+      },
+      child: w,
+    );
+  }
+
+  /// 选中控件的内缘拖拽条（需求 8）：按下即接管调尺寸，
+  /// 轻点（无位移）结束时让外层逻辑触发选中。
+  Widget _edgeGesture(PointItem p, _Edge edge, double scale) {
+    return RawGestureDetector(
+      key: ValueKey('edge_${edge.name}_${p.id}'),
+      behavior: HitTestBehavior.opaque,
+      gestures: {
+        _InstantDragRecognizer:
+            GestureRecognizerFactoryWithHandlers<_InstantDragRecognizer>(
+          () {
+            final drag = _CanvasResizeDrag(p, edge, scale, onLayoutChanged);
+            return _InstantDragRecognizer(
+              onUpdate: (d) => drag.update(DragUpdateDetails(
+                  delta: d, globalPosition: Offset.zero)),
+              onEnd: () => drag.end(DragEndDetails()),
+              onCancel: () => drag.cancel(),
+              onDown: () => drag.reset(),
+            );
+          },
+          (_) {},
+        ),
+      },
+    );
+  }
+
+  Widget _ctrlOf(BuildContext context, PointItem p) {
+    final s = status;
+    if (p.isCross) {
+      return CrossButton(
+        point: p,
+        device: device,
+        enabled: device != null && connected,
+        showAddr: showAddr,
+      );
+    }
+    if (p.isJogButton) {
+      final dev = device;
+      // 预览 / 编辑器：无设备连接，渲染同款按钮观感的惰性样式
+      if (dev == null) {
+        return Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topCenter, end: Alignment.bottomCenter,
+              colors: [Color(0xFF2A333A), Color(0xFF1C2226)],
+            ),
+            border: Border.all(color: const Color(0xFF39424A)),
+            borderRadius: BorderRadius.circular(8),
+            boxShadow: [BoxShadow(
+                color: Colors.black.withValues(alpha: .4),
+                blurRadius: 4, offset: const Offset(0, 2))],
+          ),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13,
+                    fontWeight: FontWeight.w600, color: cText)),
+            if (showAddr) ...[
+              const SizedBox(height: 2),
+              Text(_addrLine(p.address, p.dataType,
+                      AppStore.instance.commentOf(p)),
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 9,
+                      fontFamily: 'monospace', color: const Color(0xFF7C878E))),
+            ],
+          ]),
+        );
+      }
+      return JogButton(device: dev, point: p, enabled: connected,
+          showAddr: showAddr);
+    }
+    if (p.canWrite) {
+      return _CanvasWrite(
+        point: p,
+        device: device,
+        current: s?.values[p.id],
+        enabled: device != null && connected,
+        showAddr: showAddr,
+      );
+    }
+    // 状态显示（需求 12）：ON/OFF 文字不显示，用背景色区分；
+    // 需求 13：地址行只在编辑器显示
+    final on = s?.isOn(p.id) ?? false;
+    final hasVal = s != null && s.values[p.id] != null;
+    final isBit = p.dataType.isBit;
+    final addr = device == null ? p.address : AppStore.instance.addrOf(device!, p);
+    final val = s == null ? '' : formatVarValue(p.dataType, s.values[p.id]);
+    // ON 深绿底 / OFF 暗灰底（仅 BOOL 状态控件）；数值控件保持卡片底
+    final bg = isBit
+        ? (on ? const Color(0xFF1D4A2F) : const Color(0xFF262D33))
+        : cCard;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      decoration: BoxDecoration(
+        color: bg,
+        border: Border.all(color: on && isBit ? cGreenDot : cLine),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Row(children: [
+            Container(width: 6, height: 6,
+                decoration: BoxDecoration(shape: BoxShape.circle,
+                    color: hasVal ? (on ? cGreenDot : const Color(0xFF3D464C)) : const Color(0xFF3D464C))),
+            const SizedBox(width: 6),
+            Expanded(child: Text(p.name,
+                maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12,
+                    color: on ? cText : cSub))),
+            if (!isBit) ...[
+              const SizedBox(width: 4),
+              Text(hasVal ? val : '--',
+                  style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      fontFamily: 'monospace',
+                      color: cData)),
+            ],
+          ]),
+          if (showAddr) ...[
+            const SizedBox(height: 3),
+            Text(
+                _addrLine(addr, p.dataType,
+                    AppStore.instance.commentOf(p, deviceAddress: addr)),
+                maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 9,
+                  fontFamily: 'monospace', color: cDim)),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 画布控件拖动会话：把屏幕位移换算成设计坐标并 clamp 到画布内（需求 23-7）。
+/// 轻点（全程无位移）在结束时回调 onTap，等价原 tap 选中。
+/// 画布空白轻点检测：裸 Listener，不参与手势竞技场（不干扰双击/长按）。
+/// 按下到抬起位移小于阈值判定为轻点；滚动（位移大）不触发。
+class _BlankTapDetector extends StatefulWidget {
+  final VoidCallback onTapBlank;
+  const _BlankTapDetector({required this.onTapBlank});
+  @override
+  State<_BlankTapDetector> createState() => _BlankTapDetectorState();
+}
+
+class _BlankTapDetectorState extends State<_BlankTapDetector> {
+  Offset? _down;
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: (e) => _down = e.position,
+      onPointerUp: (e) {
+        final down = _down;
+        _down = null;
+        if (down != null && (e.position - down).distance < 18) {
+          widget.onTapBlank();
+        }
+      },
+    );
+  }
+}
+
+/// 选中控件的拖动会话：把屏幕位移换算成设计坐标并 clamp 到画布内（需求 23-7）。
+/// 只负责移动，选中由未选中控件的 双击/长按 手势完成。
+class _CanvasItemDrag implements Drag {
+  _CanvasItemDrag(this.p, this.scale, this.h, this.onLayout);
+  final PointItem p;
+  final double scale;
+  final double h;
+  final VoidCallback? onLayout;
+  @override
+  void update(DragUpdateDetails d) {
+    // 屏幕逻辑像素 → 设计坐标
+    p.x = (p.x + d.delta.dx / scale).clamp(0, kCanvasW - p.w).toDouble();
+    p.y = (p.y + d.delta.dy / scale).clamp(0, h - p.h).toDouble();
+    onLayout?.call();
+  }
+  @override
+  void end(DragEndDetails d) {}
+  @override
+  void cancel() {}
+}
+
+/// 按下即接管竞技场的手势识别器：画布控件 / 边条嵌在 ListView 里，
+/// 垂直拖动必须压过列表滚动。down 立即 accept，move 逐帧回调位移；
+/// 结束时回调 onEnd（拖动会话里自行判定轻点 = 无位移）。
+class _InstantDragRecognizer extends OneSequenceGestureRecognizer {
+  _InstantDragRecognizer(
+      {required this.onUpdate, this.onEnd, this.onCancel, this.onDown});
+  final void Function(Offset delta) onUpdate;
+  final VoidCallback? onEnd;
+  final VoidCallback? onCancel;
+  final VoidCallback? onDown;
+  int? _pointer;
+  Offset? _last;
+
+  @override
+  void addPointer(PointerDownEvent event) {
+    if (_pointer != null) return;
+    _pointer = event.pointer;
+    _last = event.position;
+    onDown?.call(); // 新会话：重置拖动状态 / 启动长按计时
+    super.addPointer(event);
+    // 按下即接管：ListView 等竞争者直接出局
+    resolve(GestureDisposition.accepted);
+  }
+
+  @override
+  void handleEvent(PointerEvent event) {
+    if (event.pointer != _pointer) return;
+    if (event is PointerMoveEvent) {
+      final d = event.position - _last!;
+      _last = event.position;
+      onUpdate(d);
+    } else if (event is PointerUpEvent) {
+      _pointer = null;
+      onEnd?.call();
+      stopTrackingPointer(event.pointer);
+    } else if (event is PointerCancelEvent) {
+      _pointer = null;
+      onCancel?.call();
+      stopTrackingPointer(event.pointer);
+    }
+  }
+
+  @override
+  void acceptGesture(int pointer) {}
+
+  @override
+  void rejectGesture(int pointer) {
+    _pointer = null;
+  }
+
+  @override
+  void didStopTrackingLastPointer(int pointer) {}
+
+  @override
+  String get debugDescription => 'instantDrag';
+}
+
+/// 选中控件的四条边（需求 8）：左右边拖 = 改宽度，上下边拖 = 改高度
+enum _Edge { left, right, top, bottom }
+
+/// 画布控件边框拖拽会话（需求 8）：拖内缘条改变控件宽高，
+/// clamp 到与属性面板一致的合法范围（宽 40~360，高 30~400）。
+class _CanvasResizeDrag implements Drag {
+  _CanvasResizeDrag(this.p, this.edge, this.scale, this.onLayout);
+  final PointItem p;
+  final _Edge edge;
+  final double scale;
+  final VoidCallback? onLayout;
+  // 与 _CanvasItemDrag 同款：真机抖动不改尺寸
+  static const double _kTapSlop = 12;
+  double _dist = 0;
+
+  /// 每次手指按下重置累计位移（识别器实例跨多次点击复用）。
+  void reset() {
+    _dist = 0;
+  }
+
+  @override
+  void update(DragUpdateDetails d) {
+    _dist += d.delta.distance;
+    if (_dist < _kTapSlop) return; // 轻点抖动：忽略
+    final dx = d.delta.dx / scale;
+    final dy = d.delta.dy / scale;
+    switch (edge) {
+      case _Edge.left:
+        // 左边随手指移动，宽度随之增减
+        final nx = (p.x + dx).clamp(0.0, p.x + p.w - 40).toDouble();
+        p.w = p.w + (p.x - nx);
+        p.x = nx;
+        break;
+      case _Edge.right:
+        p.w = (p.w + dx).clamp(40.0, kCanvasW - p.x).toDouble();
+        break;
+      case _Edge.top:
+        final ny = (p.y + dy).clamp(0.0, p.y + p.h - 30).toDouble();
+        p.h = p.h + (p.y - ny);
+        p.y = ny;
+        break;
+      case _Edge.bottom:
+        p.h = (p.h + dy).clamp(30.0, 400.0).toDouble();
+        break;
+    }
+    onLayout?.call();
+  }
+  @override
+  void end(DragEndDetails d) {}
+  @override
+  void cancel() {}
+}
+
+/// 十字按钮（需求 24-2）：前 / 后 / 左 / 右四个脚，各绑一个 BOOL 地址。
+/// 按住脚 = 对该地址写 1，松开写 0（点动语义）。
+class CrossButton extends StatefulWidget {
+  final PointItem point;
+  final Device? device;
+  final bool enabled;
+  /// 预览 / 编辑器里显示四脚地址提示
+  final bool showAddr;
+  const CrossButton({
+    super.key,
+    required this.point,
+    this.device,
+    this.enabled = false,
+    this.showAddr = false,
+  });
+  @override
+  State<CrossButton> createState() => _CrossButtonState();
+}
+
+class _CrossButtonState extends State<CrossButton> {
+  final active = <String, bool>{};
+  final pressed = <String, bool>{};
+
+  Future<void> _set(String dir, String label, bool v) async {
+    if (!widget.enabled) return;
+    final addr = widget.point.dirs[dir]?.trim() ?? '';
+    if (addr.isEmpty) {
+      if (v) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('「${widget.point.name}·$label」还没配置地址，请到编辑页填写'),
+            duration: const Duration(seconds: 2)));
+      }
+      return;
+    }
+    final ok = await CommManager.instance.writeBitAt(
+        widget.device!, addr, v, label: '${widget.point.name}·$label');
+    if (!mounted) return;
+    setState(() => active[dir] = ok && v);
+    if (!ok) {
+      final msg = CommManager.instance
+              .st(widget.device!.id)
+              .writeError ??
+          '写入失败';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('「${widget.point.name}·$label」$msg'),
+          duration: const Duration(seconds: 3)));
+    }
+  }
+
+  Widget _foot(String dir, String label, IconData icon) {
+    final addr = widget.point.dirs[dir]?.trim() ?? '';
+    final on = active[dir] == true;
+    final dn = pressed[dir] == true;
+    final usable = widget.enabled && addr.isNotEmpty;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: usable ? (_) { setState(() => pressed[dir] = true); _set(dir, label, true); } : null,
+      onTapUp: usable ? (_) { setState(() => pressed[dir] = false); _set(dir, label, false); } : null,
+      onTapCancel: usable ? () { setState(() => pressed[dir] = false); _set(dir, label, false); } : null,
+      child: Container(
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: !usable
+              ? const Color(0xFF141719)
+              : (on
+                  ? const Color(0xFF1A3A22)
+                  : (dn ? const Color(0xFF22281C) : const Color(0xFF232A2F))),
+          border: Border.all(
+              color: !usable
+                  ? const Color(0xFF262C30)
+                  : (on ? cGreen : (dn ? cAccent : const Color(0xFF39424A))),
+              width: on || dn ? 1.5 : 1),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        // 脚内容放不下时整体缩一点，不溢出
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon, size: 14,
+                color: on ? cGreen : (usable ? cSub : const Color(0xFF4A5359))),
+            const SizedBox(height: 1),
+            Text(label,
+                style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600,
+                    color: on ? cGreen : (usable ? cText : const Color(0xFF4A5359)))),
+            if (widget.showAddr && addr.isNotEmpty)
+              Text(addr, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 7.5,
+                      fontFamily: 'monospace', color: cDim)),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.point;
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: const Color(0xFF171B1E),
+        border: Border.all(color: const Color(0xFF2C333A)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(children: [
+        Expanded(child: _foot('fwd', '前', Icons.arrow_upward)),
+        Expanded(
+          flex: 2,
+          child: Row(children: [
+            Expanded(child: _foot('left', '左', Icons.arrow_back)),
+            Expanded(
+              child: Container(
+                margin: const EdgeInsets.all(2),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: const Color(0xFF1C2226),
+                  border: Border.all(color: const Color(0xFF39424A)),
+                ),
+                alignment: Alignment.center,
+                child: Text(p.name,
+                    maxLines: 2, overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 10.5,
+                        fontWeight: FontWeight.w600, color: cText)),
+              ),
+            ),
+            Expanded(child: _foot('right', '右', Icons.arrow_forward)),
+          ]),
+        ),
+        Expanded(child: _foot('back', '后', Icons.arrow_downward)),
+      ]),
+    );
+  }
+}
+
+/// 画布内的写入/输入域控件（需求 24-1 区域内紧凑呈现）
+class _CanvasWrite extends StatelessWidget {
+  final PointItem point;
+  final Device? device;
+  final Object? current;
+  final bool enabled;
+  /// 地址行仅编辑器显示（需求 13）
+  final bool showAddr;
+  const _CanvasWrite({
+    required this.point,
+    this.device,
+    this.current,
+    this.enabled = false,
+    this.showAddr = false,
+  });
+
+  Future<void> _onTap(BuildContext context) async {
+    final p = point;
+    final d = device!;
+    // 需求 10：BOOL 输入域点按即翻转 ON↔OFF，不弹窗
+    if (p.dataType.isBit) {
+      final v = current == true ? false : true;
+      final ok = await CommManager.instance.writeBit(d, p, v);
+      if (!context.mounted) return;
+      final err = CommManager.instance.st(d.id).writeError ?? '写入失败';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(ok ? '「${p.name}」已写入 ${v ? 1 : 0}' : '「${p.name}」$err'),
+          duration: const Duration(seconds: 2),
+          backgroundColor: ok ? null : const Color(0xFF3A1F1F)));
+      return;
+    }
+    // 其他类型：弹窗输入数值
+    await showWriteDialog(context, d, p, current);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = point;
+    final isBit = p.dataType.isBit;
+    final on = enabled && isBit && current == true;
+    // 需求 12：BOOL 不再显示 ON/OFF 文字，用背景色区分
+    final txt = !enabled
+        ? '--'
+        : (isBit ? '' : formatVarValue(p.dataType, current));
+    final addr =
+        device == null ? p.address : AppStore.instance.addrOf(device!, p);
+    final bg = isBit && enabled
+        ? (on ? const Color(0xFF1D4A2F) : const Color(0xFF262D33))
+        : cCard;
+    return InkWell(
+      onTap: enabled ? () => _onTap(context) : null,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+        decoration: BoxDecoration(
+          color: bg,
+          border: Border.all(
+              color: isBit && enabled
+                  ? (on ? cGreenDot : const Color(0xFF2E6F8E))
+                  : const Color(0xFF2E6F8E),
+              width: 1),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Row(children: [
+              Container(width: 6, height: 6,
+                  decoration: const BoxDecoration(shape: BoxShape.circle,
+                      color: cData)),
+              const SizedBox(width: 6),
+              Expanded(child: Text(p.name,
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, color: cText))),
+              if (!isBit && txt.isNotEmpty) ...[
+                const SizedBox(width: 4),
+                Text(txt,
+                    style: TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.bold,
+                        fontFamily: 'monospace',
+                        color: enabled ? cData : const Color(0xFF4A5359))),
+              ],
+            ]),
+            if (showAddr) ...[
+              const SizedBox(height: 3),
+              Text(
+                  _addrLine(addr, p.dataType,
+                      AppStore.instance.commentOf(p, deviceAddress: addr)),
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 9,
+                      fontFamily: 'monospace', color: cDim)),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 画布输入域的写入弹窗（BOOL → 0/1 选择；数值 → 输入框）。
+/// 与监控页画布外的写入控件同一套校验，按数据类型范围拦截。
+Future<void> showWriteDialog(
+    BuildContext context, Device d, PointItem p, Object? current) async {
+  if (p.dataType.isBit) {
+    final okv = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: cCard,
+        title: Text('写入「${p.name}」',
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cText)),
+        content: Text('${AppStore.instance.addrOf(d, p)} · 写 1 = 置位，写 0 = 复位',
+            style: const TextStyle(fontSize: 11, color: cSub)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('写 0', style: TextStyle(fontSize: 13, color: cSub))),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('写 1', style: TextStyle(fontSize: 13, color: cAccent))),
+        ],
+      ),
+    );
+    if (okv == null || !context.mounted) return;
+    final ok = await CommManager.instance.writeBit(d, p, okv);
+    if (!context.mounted) return;
+    final err = CommManager.instance.st(d.id).writeError ?? '写入失败';
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ok ? '「${p.name}」已写入 ${okv ? 1 : 0}' : '「${p.name}」$err'),
+        duration: const Duration(seconds: 2),
+        backgroundColor: ok ? null : const Color(0xFF3A1F1F)));
+    return;
+  }
+  final ctrl = TextEditingController(
+      text: current == null ? '' : formatVarValue(p.dataType, current));
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: cCard,
+      title: Text('写入「${p.name}」',
+          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cText)),
+      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(
+            p.dataType.isFloat
+                ? '${p.dataType.label} · 可输入小数'
+                : '${p.dataType.label} · 整数 ${p.dataType.minValue} ~ ${p.dataType.maxValue}',
+            style: const TextStyle(fontSize: 10.5, color: cDim)),
+        const SizedBox(height: 10),
+        TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: TextInputType.numberWithOptions(
+              decimal: p.dataType.isFloat, signed: p.dataType.isSigned),
+          style: const TextStyle(fontSize: 16, fontFamily: 'monospace', color: cText),
+          decoration: InputDecoration(
+            hintText: p.dataType.isFloat ? '如 12.5' : '如 100',
+            hintStyle: const TextStyle(fontSize: 13, color: cDim),
+            filled: true,
+            fillColor: cCardDark,
+            isDense: true,
+            border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(4),
+                borderSide: const BorderSide(color: cLine)),
+          ),
+          onSubmitted: (_) => Navigator.pop(ctx, true),
+        ),
+      ]),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消', style: TextStyle(fontSize: 13, color: cSub))),
+        TextButton(onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('写入', style: TextStyle(fontSize: 13, color: cAccent))),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+  final v = p.dataType.parseNum(ctrl.text);
+  if (v == null) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(p.dataType.isFloat
+            ? '数值格式不对（${p.dataType.label} 只接受小数）'
+            : '数值格式不对或超出 ${p.dataType.label} 范围'),
+        backgroundColor: const Color(0xFF3A1F1F)));
+    return;
+  }
+  final ok = await CommManager.instance.writeValue(d, p, v);
+  if (!context.mounted) return;
+  final err = CommManager.instance.st(d.id).writeError ?? '写入失败';
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok
+          ? '「${p.name}」已写入 ${formatVarValue(p.dataType, v)}'
+          : '「${p.name}」$err'),
+      duration: const Duration(seconds: 2),
+      backgroundColor: ok ? null : const Color(0xFF3A1F1F)));
+}
+
+/// 布局编辑器（需求 23）：画布 + 选中属性面板。
+/// 模板编辑界面与设备向导第 2 步共用。
+class LayoutEditor extends StatefulWidget {
+  final List<PointItem> points;
+  /// 任何布局 / 属性改动后回调（父级 setState + 标脏）
+  final VoidCallback onChanged;
+  /// 打开既有「详细编辑」弹窗（名称/地址/类型/性质）
+  final Future<void> Function(PointItem p) onEditDetail;
+  final VoidCallback onAddButton;
+  final VoidCallback onAddStatus;
+  final VoidCallback onAddCross;
+  /// 选中状态由页面级持有：画布滚出视野被 ListView 回收后再滚回来，选中不丢
+  final String? selectedId;
+  final ValueChanged<String?> onSelect;
+  const LayoutEditor({
+    super.key,
+    required this.points,
+    required this.onChanged,
+    required this.onEditDetail,
+    required this.onAddButton,
+    required this.onAddStatus,
+    required this.onAddCross,
+    this.selectedId,
+    required this.onSelect,
+  });
+  @override
+  State<LayoutEditor> createState() => _LayoutEditorState();
+}
+
+class _LayoutEditorState extends State<LayoutEditor> {
+  String? get selectedId => widget.selectedId;
+
+  PointItem? get _sel =>
+      widget.points.where((p) => p.id == selectedId).firstOrNull;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: _box(cCard),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.dashboard_customize, size: 15, color: cSub),
+          const SizedBox(width: 6),
+          const Text('监控操作区域',
+              style: TextStyle(fontSize: 12.5, color: cText,
+                  fontWeight: FontWeight.w600)),
+          const Spacer(),
+          // 预览（需求 23-6）：真实监控画面 + 拖动改位置
+          InkWell(
+            onTap: _openPreview,
+            borderRadius: BorderRadius.circular(4),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                  border: Border.all(color: cAccent),
+                  borderRadius: BorderRadius.circular(4)),
+              child: const Row(children: [
+                Icon(Icons.visibility_outlined, size: 13, color: cAccent),
+                SizedBox(width: 4),
+                Text('预览', style: TextStyle(fontSize: 11, color: cAccent)),
+              ]),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 6),
+        Text('点选控件后下方显示属性，只有选中的控件可编辑；拖动可直接移动位置。',
+            style: const TextStyle(fontSize: 9.5, color: cDim)),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(child: _addBtn('+ 按钮', Icons.touch_app_outlined, widget.onAddButton)),
+          const SizedBox(width: 6),
+          Expanded(child: _addBtn('+ 状态', Icons.circle_outlined, widget.onAddStatus)),
+          const SizedBox(width: 6),
+          Expanded(child: _addBtn('+ 十字', Icons.open_with, widget.onAddCross)),
+        ]),
+        const SizedBox(height: 8),
+        MonitorCanvas(
+          points: widget.points,
+          draggable: true,
+          selectedId: selectedId,
+          onTapCtrl: (p) => widget.onSelect(p.id),
+          onTapBlank: () => widget.onSelect(null),
+          onLayoutChanged: widget.onChanged,
+          showAddr: true,
+        ),
+        const SizedBox(height: 8),
+        if (_sel != null)
+          _PropPanel(
+            key: ValueKey('prop_${_sel!.id}'),
+            point: _sel!,
+            onChanged: widget.onChanged,
+            onEditDetail: () => widget.onEditDetail(_sel!),
+            onDelete: () {
+              widget.onSelect(null);
+              widget.points.remove(_sel);
+              widget.onChanged();
+            },
+          )
+        else
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+                color: const Color(0xFF161A1D),
+                border: Border.all(color: const Color(0xFF333B40))),
+            child: const Text('未选中控件 —— 点画布里的控件开始编辑（需求 23-4：选中的控件才可以编辑）',
+                style: TextStyle(fontSize: 10.5, color: cDim)),
+          ),
+      ]),
+    );
+  }
+
+  Widget _addBtn(String label, IconData icon, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        height: 36,
+        decoration: BoxDecoration(
+            color: const Color(0xFF161A1D),
+            border: Border.all(color: const Color(0xFF333B40))),
+        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Icon(icon, size: 14, color: cSub),
+          const SizedBox(width: 5),
+          Text(label, style: const TextStyle(fontSize: 11.5, color: cSub)),
+        ]),
+      ),
+    );
+  }
+
+  /// 预览页（需求 23-6/7）：真实监控画面样式，里面可以拖动控件改位置
+  void _openPreview() {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => LayoutPreviewPage(
+        points: widget.points,
+        onChanged: widget.onChanged,
+      ),
+    ));
+  }
+}
+
+/// 选中控件的属性面板（需求 23-3/5）：属性在画布下方显示，可直接输入。
+/// 文字大小不变，宽高数值只改变控件框体（变密不变字）。
+class _PropPanel extends StatefulWidget {
+  final PointItem point;
+  final VoidCallback onChanged;
+  final VoidCallback onEditDetail;
+  final VoidCallback onDelete;
+  const _PropPanel({
+    super.key,
+    required this.point,
+    required this.onChanged,
+    required this.onEditDetail,
+    required this.onDelete,
+  });
+  @override
+  State<_PropPanel> createState() => _PropPanelState();
+}
+
+class _PropPanelState extends State<_PropPanel> {
+  late final TextEditingController nameC =
+      TextEditingController(text: widget.point.name);
+  late final TextEditingController wC =
+      TextEditingController(text: '${widget.point.w.round()}');
+  late final TextEditingController hC =
+      TextEditingController(text: '${widget.point.h.round()}');
+  late final List<TextEditingController> dirC = [
+    for (final k in const ['fwd', 'back', 'left', 'right'])
+      TextEditingController(text: widget.point.dirs[k] ?? ''),
+  ];
+
+  @override
+  void dispose() {
+    nameC.dispose();
+    wC.dispose();
+    hC.dispose();
+    for (final c in dirC) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  static const _dirNames = ['前', '后', '左', '右'];
+  static const _dirKeys = ['fwd', 'back', 'left', 'right'];
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.point;
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+          color: const Color(0xFF161A1D),
+          border: Border.all(color: cAccent, width: 1)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.tune, size: 14, color: cAccent),
+          const SizedBox(width: 6),
+          const Text('控件属性',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: cText)),
+          const Spacer(),
+          InkWell(
+            onTap: widget.onEditDetail,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(border: Border.all(color: cLine)),
+              child: const Text('详细编辑（地址/类型）',
+                  style: TextStyle(fontSize: 10.5, color: cSub)),
+            ),
+          ),
+          const SizedBox(width: 6),
+          InkWell(
+            onTap: widget.onDelete,
+            child: Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(border: Border.all(color: const Color(0xFF4A2A2A))),
+              child: const Icon(Icons.delete_outline, size: 14, color: cRed),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        // 名称
+        Row(children: [
+          const SizedBox(
+              width: 52,
+              child: Text('名称', style: TextStyle(fontSize: 11, color: cDim))),
+          Expanded(
+            child: TextField(
+              controller: nameC,
+              style: const TextStyle(fontSize: 12.5, color: cText),
+              decoration: _propDeco(),
+              onChanged: (v) {
+                if (v.trim().isNotEmpty) p.name = v.trim();
+                widget.onChanged();
+              },
+            ),
+          ),
+        ]),
+        const SizedBox(height: 6),
+        // 宽 / 高（需求 23-5）
+        Row(children: [
+          const SizedBox(
+              width: 52,
+              child: Text('宽 × 高', style: TextStyle(fontSize: 11, color: cDim))),
+          SizedBox(
+            width: 64,
+            child: TextField(
+              controller: wC,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12.5, color: cData, fontFamily: 'monospace'),
+              decoration: _propDeco(suffix: '宽'),
+              onChanged: (v) {
+                final n = int.tryParse(v) ?? 0;
+                if (n >= 40 && n <= 360) p.w = n.toDouble();
+                widget.onChanged();
+              },
+            ),
+          ),
+          const SizedBox(width: 4),
+          SizedBox(
+            width: 64,
+            child: TextField(
+              controller: hC,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12.5, color: cData, fontFamily: 'monospace'),
+              decoration: _propDeco(suffix: '高'),
+              onChanged: (v) {
+                final n = int.tryParse(v) ?? 0;
+                if (n >= 30 && n <= 400) p.h = n.toDouble();
+                widget.onChanged();
+              },
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text('当前 ${p.address} · ${p.roleLabel}',
+                maxLines: 2, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 9.5, color: cDim)),
+          ),
+        ]),
+        // 十字按钮四脚地址（需求 24-2）
+        if (p.isCross) ...[
+          const SizedBox(height: 6),
+          for (int i = 0; i < 4; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 5),
+              child: Row(children: [
+                SizedBox(
+                    width: 52,
+                    child: Text(_dirNames[i],
+                        style: const TextStyle(fontSize: 11, color: cDim))),
+                Expanded(
+                  child: AddressField(
+                    initial: dirC[i].text,
+                    type: VarType.boolean,
+                    onChanged: (a) {
+                      p.dirs[_dirKeys[i]] = a;
+                      widget.onChanged();
+                    },
+                  ),
+                ),
+              ]),
+            ),
+          const Text('四脚地址必须落在 M 区 / DB 区（点动写入），留空 = 该脚禁用',
+              style: TextStyle(fontSize: 9.5, color: cDim)),
+        ],
+      ]),
+    );
+  }
+
+  InputDecoration _propDeco({String? suffix}) => InputDecoration(
+        isDense: true,
+        filled: true,
+        fillColor: cCardDark,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+        suffixText: suffix,
+        suffixStyle: const TextStyle(fontSize: 9.5, color: cDim),
+        enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(3),
+            borderSide: const BorderSide(color: Color(0xFF39424A))),
+        focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(3),
+            borderSide: const BorderSide(color: cAccent)),
+      );
+}
+
+/// 预览页（需求 23-6/7）：与真实监控页同一套画布渲染；
+/// 通讯未接时值为 --、按钮置灰；可拖动控件改位置（直接写回点位）。
+class LayoutPreviewPage extends StatefulWidget {
+  final List<PointItem> points;
+  final VoidCallback onChanged;
+  const LayoutPreviewPage({super.key, required this.points, required this.onChanged});
+  @override
+  State<LayoutPreviewPage> createState() => _LayoutPreviewPageState();
+}
+
+class _LayoutPreviewPageState extends State<LayoutPreviewPage> {
+  String? _selId;
+  @override
+  Widget build(BuildContext context) {
+    // 拖动回调：先 setState 本页让画布实时跟随，
+    // 再同步给编辑页（它持有点位引用，保底标脏即可）
+    void onLayout() {
+      setState(() {});
+      widget.onChanged();
+    }
+    return Scaffold(
+      backgroundColor: cBg,
+      appBar: AppBar(
+        backgroundColor: cBg,
+        foregroundColor: cText,
+        elevation: 0,
+        title: const Text('预览 · 拖动控件调整位置',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('完成', style: TextStyle(color: cAccent)),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: ListView(padding: const EdgeInsets.all(20), children: [
+          Container(
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.all(10),
+            decoration: _box(cCard),
+            child: const Row(children: [
+              Icon(Icons.info_outline, size: 14, color: cDim),
+              SizedBox(width: 8),
+              Expanded(child: Text(
+                  '这是真实监控画面（未连接通讯，值为 --）。按住控件拖动即可调整位置，'
+                  '退出预览自动保存。',
+                  style: TextStyle(fontSize: 10.5, color: cSub))),
+            ]),
+          ),
+          // 状态灯占位（与监控页一致的位置）
+          Row(children: [
+            const Text('状态灯', style: TextStyle(fontSize: 10, color: cDim)),
+            const SizedBox(width: 5),
+            Container(
+              width: 14, height: 14,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: const Color(0xFF3D464C),
+                border: Border.all(color: const Color(0xFF333B40)),
+              ),
+            ),
+            const Spacer(),
+            const Text('--', style: TextStyle(fontSize: 10, color: cDim)),
+          ]),
+          const SizedBox(height: 8),
+          MonitorCanvas(
+            points: widget.points,
+            draggable: true,
+            selectedId: _selId,
+            onTapCtrl: (p) => setState(() => _selId = p.id),
+            onTapBlank: () => setState(() => _selId = null),
+            onLayoutChanged: onLayout,
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: _box(const Color(0xFF171B1E),
+                borderColor: const Color(0xFF262C30)),
+            child: const Text(
+                '安全提示：松开按钮立即向 PLC 写入 OFF，设备即刻停止。正反转按钮请勿同时按住，同一时刻仅允许一个方向输出。',
+                style: TextStyle(fontSize: 10.5, color: cSub)),
+          ),
+        ]),
+      ),
+    );
   }
 }
 
@@ -1875,16 +3087,6 @@ class _MonitorScreenState extends State<MonitorScreen> {
     final visible = tpl!.points
         .where((p) => p.visible && p.type != PointType.image)
         .toList();
-    // 状态信号栏：只读点位（含所有 I / Q 区地址）
-    final inputs = visible.where((p) => p.isStatusOnly).toList();
-    // 操作栏·点动：BOOL 按钮，只可能落在 M / DB 区
-    final jogs = visible
-        .where((p) => p.isJogButton && p.dataType.isBit)
-        .toList();
-    // 操作栏·写入：可写点位（M / DB 区的输入域，或数值型输出点）
-    final writes = visible
-        .where((p) => p.canWrite && !(p.isJogButton && p.dataType.isBit))
-        .toList();
     final connected = s.state == ConnState.connected;
 
     return Scaffold(
@@ -1937,94 +3139,23 @@ class _MonitorScreenState extends State<MonitorScreen> {
               ),
             // 未连接时不再替换整个画面，只在顶部提示 + 全控件置灰
             if (!connected) _offlineBanner(s),
-            // 报警行：显示在状态区上面，滚动展示所有触发的报警（未配置时显示提示）
+            // 报警行：还是原来位置（状态区上面），滚动展示所有触发的报警（需求 23-2）
             _alarmRow(s, connected),
-            ...[
-              if (inputs.isNotEmpty) ...[
-                Row(children: [
-                  const Text('状态显示',
-                      style: TextStyle(fontSize: 11, color: cDim, letterSpacing: 1)),
-                  const Spacer(),
-                  // 报警灯：只做状态显示，地址为 1 亮红灯、0 亮绿色，未配置/未读到为灰
-                  _lampDot(s),
-                ]),
-                const SizedBox(height: 8),
-                GridView.count(
-                  crossAxisCount: 2, shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  mainAxisSpacing: 8, crossAxisSpacing: 8, childAspectRatio: 2.5,
-                  children: inputs.map((p) {
-                    final on = s.isOn(p.id);
-                    final addr = AppStore.instance.addrOf(d!, p);
-                    final val = formatVarValue(p.dataType, s.values[p.id]);
-                    return Container(
-                      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-                      decoration: _box(cCard),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Row(children: [
-                            Container(width: 6, height: 6,
-                                decoration: BoxDecoration(shape: BoxShape.circle,
-                                    color: on ? cGreenDot : const Color(0xFF3D464C))),
-                            const SizedBox(width: 6),
-                            Expanded(child: Text(p.name,
-                                maxLines: 1, overflow: TextOverflow.ellipsis,
-                                style: TextStyle(fontSize: 12,
-                                    color: on ? cText : cSub))),
-                            const SizedBox(width: 4),
-                            Text(val,
-                                style: TextStyle(
-                                    fontSize: p.dataType.isBit ? 13 : 12,
-                                    fontWeight: FontWeight.bold,
-                                    fontFamily: 'monospace',
-                                    color: p.dataType.isBit
-                                        ? (on ? cGreen : const Color(0xFF5C6A72))
-                                        : cData)),
-                          ]),
-                          const SizedBox(height: 3),
-                          Text(
-                              _addrLine(addr, p.dataType,
-                                  AppStore.instance.commentOf(p, deviceAddress: addr)),
-                              maxLines: 1, overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 9,
-                                  fontFamily: 'monospace', color: cDim)),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 16),
-              ],
-              if (jogs.isNotEmpty) ...[
-                const Text('点动操作 · 按下置 1，松开置 0',
-                    style: TextStyle(fontSize: 11, color: cDim, letterSpacing: 1)),
-                const SizedBox(height: 8),
-                GridView.count(
-                  crossAxisCount: 2, shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  mainAxisSpacing: 8, crossAxisSpacing: 8, childAspectRatio: 2.8,
-                  children: jogs.map((p) =>
-                      JogButton(device: d!, point: p, enabled: connected)).toList(),
-                ),
-                const SizedBox(height: 16),
-              ],
-              if (writes.isNotEmpty) ...[
-                const Text('点位写入 · BOOL 点 0/1，数值点输数值',
-                    style: TextStyle(fontSize: 11, color: cDim, letterSpacing: 1)),
-                const SizedBox(height: 8),
-                ...writes.map((p) => WriteTile(
-                      device: d!,
-                      point: p,
-                      current: s.values[p.id],
-                      enabled: connected,
-                    )),
-                const SizedBox(height: 2),
-                const Text('提示：I / Q 区是过程映像，本 App 一律只读；写入只在 M 区、DB 区生效。',
-                    style: TextStyle(fontSize: 9.5, color: cDim)),
-              ],
-            ],
+            // 状态灯（原报警灯，需求 27）+ 画布标题
+            Row(children: [
+              const Text('监控操作区域',
+                  style: TextStyle(fontSize: 11, color: cDim, letterSpacing: 1)),
+              const Spacer(),
+              _lampDot(s),
+            ]),
+            const SizedBox(height: 8),
+            // 监控操作区域（需求 23-1）：所有控件在画布内按编辑布局显示并操作
+            MonitorCanvas(
+              points: visible,
+              device: d!,
+              status: s,
+              connected: connected,
+            ),
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(12),
@@ -2144,14 +3275,20 @@ class _MonitorScreenState extends State<MonitorScreen> {
 
   /// 报警灯（需求 21）：只做状态显示 —— 地址为 1 亮红灯，0 亮绿色，未读到为灰
   Widget _lampDot(DeviceStatus s) {
-    final v = s.lampOn;
     final connected = s.state == ConnState.connected;
-    final lit = connected && v == true;
-    final color = !connected || v == null
-        ? const Color(0xFF3D464C)
-        : (v! ? cRed : cGreen);
+    // 需求 27：状态灯三色 —— 哪个颜色的地址为 1 就亮哪个颜色，没读到为灰
+    const colors = {
+      'red': cRed,
+      'yellow': cAmber,
+      'green': cGreen,
+      'gray': Color(0xFF3D464C),
+    };
+    final color = connected
+        ? (colors[s.lampColor] ?? const Color(0xFF3D464C))
+        : const Color(0xFF3D464C);
+    final lit = connected && s.lampColor != 'gray';
     return Row(children: [
-      const Text('报警灯', style: TextStyle(fontSize: 10, color: cDim)),
+      const Text('状态灯', style: TextStyle(fontSize: 10, color: cDim)),
       const SizedBox(width: 5),
       Container(
         key: const ValueKey('alarm_lamp_dot'),
@@ -2162,7 +3299,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
           color: color,
           border: Border.all(color: const Color(0xFF333B40)),
           boxShadow: lit
-              ? [BoxShadow(color: cRed.withValues(alpha: .55), blurRadius: 8, spreadRadius: 1)]
+              ? [BoxShadow(color: color.withValues(alpha: .55), blurRadius: 8, spreadRadius: 1)]
               : null,
         ),
       ),
@@ -2334,7 +3471,10 @@ class JogButton extends StatefulWidget {
   final PointItem point;
   /// false = 未连接：按钮置灰、完全不响应触摸
   final bool enabled;
-  const JogButton({super.key, required this.device, required this.point, this.enabled = true});
+  /// 地址行仅编辑器显示（需求 13）
+  final bool showAddr;
+  const JogButton({super.key, required this.device, required this.point,
+      this.enabled = true, this.showAddr = false});
   @override
   State<JogButton> createState() => _JogButtonState();
 }
@@ -2367,248 +3507,54 @@ class _JogButtonState extends State<JogButton> {
       onTapCancel: on ? () { setState(() => pressed = false); _set(false); } : null,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 120),
+        // 需求 24-1：按钮控件要有按钮的观感 —— 立体填充 + 圆角 + 按压/输出高亮
         decoration: BoxDecoration(
-          color: !on
-              ? const Color(0xFF141719)
-              : (active ? const Color(0xFF1A3A22) : (pressed ? const Color(0xFF22281C) : cCard)),
+          gradient: LinearGradient(
+            begin: Alignment.topCenter, end: Alignment.bottomCenter,
+            colors: !on
+                ? const [Color(0xFF1A1E22), Color(0xFF15181B)]
+                : (active
+                    ? const [Color(0xFF1F5133), Color(0xFF14331F)]
+                    : (pressed
+                        ? const [Color(0xFF2E3A22), Color(0xFF22281C)]
+                        : const [Color(0xFF2A333A), Color(0xFF1C2226)])),
+          ),
           border: Border.all(
               color: !on
                   ? const Color(0xFF262C30)
-                  : (active ? cGreen : (pressed ? cAccent : cLine)),
-              width: on && (active || pressed) ? 1.5 : 1),
-          borderRadius: BorderRadius.circular(6),
+                  : (active ? cGreen : (pressed ? cAccent : const Color(0xFF39424A))),
+              width: on && (active || pressed) ? 1.6 : 1),
+          borderRadius: BorderRadius.circular(8),
+          boxShadow: on && (active || pressed)
+              ? [BoxShadow(color: (active ? cGreen : cAccent).withValues(alpha: .35), blurRadius: 10, spreadRadius: 1)]
+              : [BoxShadow(color: Colors.black.withValues(alpha: .4), blurRadius: 4, offset: const Offset(0, 2))],
         ),
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
           Text(widget.point.name, maxLines: 1, overflow: TextOverflow.ellipsis,
               style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
                   color: on ? cText : const Color(0xFF4A5359))),
           const SizedBox(height: 2),
-          Text(
-            !on
-                ? '未连接'
-                : (active
-                    ? '输出中'
-                    : _addrLine(addr, widget.point.dataType,
-                        AppStore.instance.commentOf(widget.point, deviceAddress: addr))),
-            maxLines: 1, overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-                fontSize: 9,
-                fontFamily: 'monospace',
-                color: !on
-                    ? const Color(0xFF3D464C)
-                    : (active ? cGreen : const Color(0xFF7C878E))),
-          ),
+          // 需求 9：去掉手型图标；需求 12：输出状态只靠背景色/边框光晕表达；
+          // 需求 13：地址行只在编辑器显示
+          if (!on)
+            Text('未连接', maxLines: 1,
+                style: const TextStyle(fontSize: 9,
+                    fontFamily: 'monospace', color: Color(0xFF3D464C)))
+          else if (widget.showAddr)
+            Text(_addrLine(addr, widget.point.dataType,
+                    AppStore.instance.commentOf(widget.point,
+                        deviceAddress: addr)),
+                maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 9,
+                    fontFamily: 'monospace',
+                    color: Color(0xFF7C878E))),
         ]),
       ),
     );
   }
 }
 
-// ================== 点位写入控件 ==================
-
-/// 写入控件：
-///   · BOOL 点位 → 直接给「0 / 1」两个按钮，点哪个写哪个（非按钮属性的输入域用）
-///   · 数值点位 → 「写入」按钮弹输入框，按数据类型校验范围后下发
-class WriteTile extends StatefulWidget {
-  final Device device;
-  final PointItem point;
-  final Object? current;
-  /// false = 未连接：写入按钮全部置灰不可点
-  final bool enabled;
-  const WriteTile({super.key, required this.device, required this.point, this.current, this.enabled = true});
-  @override
-  State<WriteTile> createState() => _WriteTileState();
-}
-
-class _WriteTileState extends State<WriteTile> {
-  bool busy = false;
-
-  void _toast(String msg, {bool ok = true}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(msg),
-      duration: Duration(seconds: ok ? 2 : 3),
-      backgroundColor: ok ? null : const Color(0xFF3A1F1F),
-    ));
-  }
-
-  Future<void> _writeBool(bool v) async {
-    if (busy || !widget.enabled) return;
-    setState(() => busy = true);
-    final ok = await CommManager.instance.writeBit(widget.device, widget.point, v);
-    if (!mounted) return;
-    setState(() => busy = false);
-    if (ok) {
-      _toast('「${widget.point.name}」已写入 ${v ? 1 : 0}');
-    } else {
-      final err = CommManager.instance.st(widget.device.id).writeError ?? '写入失败';
-      _toast('「${widget.point.name}」$err', ok: false);
-    }
-  }
-
-  Future<void> _writeNum() async {
-    if (!widget.enabled) return;
-    final p = widget.point;
-    final ctrl = TextEditingController(
-        text: widget.current == null ? '' : formatVarValue(p.dataType, widget.current));
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: cCard,
-        title: Text('写入「${p.name}」',
-            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cText)),
-        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(
-              p.dataType.isFloat
-                  ? '${p.dataType.label} · 可输入小数'
-                  : '${p.dataType.label} · 整数 ${p.dataType.minValue} ~ ${p.dataType.maxValue}',
-              style: const TextStyle(fontSize: 10.5, color: cDim)),
-          const SizedBox(height: 10),
-          TextField(
-            controller: ctrl,
-            autofocus: true,
-            keyboardType: TextInputType.numberWithOptions(
-                decimal: p.dataType.isFloat, signed: p.dataType.isSigned),
-            style: const TextStyle(fontSize: 16, fontFamily: 'monospace', color: cText),
-            decoration: InputDecoration(
-              hintText: p.dataType.isFloat ? '如 12.5' : '如 100',
-              hintStyle: const TextStyle(fontSize: 13, color: cDim),
-              filled: true,
-              fillColor: cCardDark,
-              isDense: true,
-              border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(4),
-                  borderSide: const BorderSide(color: cLine)),
-            ),
-            onSubmitted: (_) => Navigator.pop(ctx, true),
-          ),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消', style: TextStyle(fontSize: 13, color: cSub))),
-          TextButton(onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('写入', style: TextStyle(fontSize: 13, color: cAccent))),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-
-    final v = p.dataType.parseNum(ctrl.text);
-    if (v == null) {
-      _toast(p.dataType.isFloat
-          ? '数值格式不对（${p.dataType.label} 只接受小数）'
-          : '数值格式不对或超出 ${p.dataType.label} 范围', ok: false);
-      return;
-    }
-    setState(() => busy = true);
-    final ok = await CommManager.instance.writeValue(widget.device, p, v);
-    if (!mounted) return;
-    setState(() => busy = false);
-    if (ok) {
-      _toast('「${p.name}」已写入 ${formatVarValue(p.dataType, v)}');
-    } else {
-      final err = CommManager.instance.st(widget.device.id).writeError ?? '写入失败';
-      _toast('「${p.name}」$err', ok: false);
-    }
-  }
-
-  Widget _bitBtn(String label, bool v) {
-    final enabled = widget.enabled && !busy;
-    final sel = widget.enabled && widget.current == v;
-    return InkWell(
-      onTap: enabled ? () => _writeBool(v) : null,
-      borderRadius: BorderRadius.circular(4),
-      child: Container(
-        width: 34, height: 28, alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: !widget.enabled
-              ? const Color(0xFF141719)
-              : (sel
-                  ? (v ? const Color(0xFF1A3A22) : const Color(0xFF2A2F33))
-                  : cCardDark),
-          border: Border.all(
-              color: !widget.enabled
-                  ? const Color(0xFF262C30)
-                  : (sel ? (v ? cGreen : cSub) : cLine)),
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: Text(label,
-            style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-                fontFamily: 'monospace',
-                color: !widget.enabled
-                    ? const Color(0xFF3D464C)
-                    : (sel ? (v ? cGreen : cText) : cSub))),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final p = widget.point;
-    final addr = AppStore.instance.addrOf(widget.device, p);
-    final isBit = p.dataType.isBit;
-    final on = widget.enabled && isBit && widget.current == true;
-    final txt = !widget.enabled
-        ? '--'
-        : (isBit
-            ? (on ? 'ON' : 'OFF')
-            : formatVarValue(p.dataType, widget.current));
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.fromLTRB(12, 8, 10, 8),
-      decoration: _box(cCard),
-      child: Row(children: [
-        Container(
-            width: 6, height: 6,
-            decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: isBit ? (on ? cGreenDot : const Color(0xFF3D464C)) : cData)),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(p.name,
-                maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 12.5, color: on || !isBit ? cText : cSub)),
-            const SizedBox(height: 2),
-            Text(
-                _addrLine(addr, p.dataType,
-                    AppStore.instance.commentOf(p, deviceAddress: addr)),
-                maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 9, fontFamily: 'monospace', color: cDim)),
-          ]),
-        ),
-        const SizedBox(width: 8),
-        if (!isBit)
-          Text(txt,
-              style: TextStyle(
-                  fontSize: 12, fontFamily: 'monospace',
-                  color: widget.enabled ? cData : const Color(0xFF3D464C))),
-        const SizedBox(width: 8),
-        if (isBit) ...[
-          _bitBtn('0', false),
-          const SizedBox(width: 6),
-          _bitBtn('1', true),
-        ] else
-          TextButton(
-            onPressed: (!widget.enabled || busy) ? null : _writeNum,
-            style: TextButton.styleFrom(
-                minimumSize: const Size(48, 28),
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                backgroundColor: widget.enabled ? cCardDark : const Color(0xFF141719),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(4),
-                    side: BorderSide(
-                        color: widget.enabled ? cLine : const Color(0xFF262C30)))),
-            child: Text('写入',
-                style: TextStyle(fontSize: 12,
-                    color: widget.enabled ? cAccent : const Color(0xFF3D464C))),
-          ),
-      ]),
-    );
-  }
-}
 
 // ================== 模板编辑 ==================
 class TemplateEditScreen extends StatefulWidget {
@@ -2620,6 +3566,8 @@ class TemplateEditScreen extends StatefulWidget {
 
 class _TemplateEditScreenState extends State<TemplateEditScreen> {
   Template? tpl;
+  /// 画布选中的控件 id（页面级，滚动不丢）
+  String? tplSelId;
 
   @override
   void initState() {
@@ -2664,6 +3612,19 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
           padding: const EdgeInsets.all(20),
           children: [
             _imageSection(),
+            const SizedBox(height: 16),
+            // 监控操作区域（需求 23/24）：画布 + 选中属性 + 预览
+            LayoutEditor(
+              points: tpl!.points,
+              selectedId: tplSelId,
+              onSelect: (id) => setState(() => tplSelId = id),
+              onChanged: () => setState(() {}),
+              onEditDetail: (p) =>
+                  p.isCross ? _editCross(p) : _editPoint(tpl!.points.indexOf(p)),
+              onAddButton: () => _addPoint(presetButton: true),
+              onAddStatus: () => _addPoint(presetButton: false),
+              onAddCross: _addCross,
+            ),
             const SizedBox(height: 16),
             const Text('界面控件 · 点按编辑', style: TextStyle(fontSize: 11, color: cDim, letterSpacing: 1)),
             const SizedBox(height: 8),
@@ -2915,13 +3876,81 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
     }
   }
 
-  Future<void> _addPoint() async {
+  /// 新增控件（进编辑弹窗）。presetButton = true → 点动按钮，false → 状态显示
+  Future<void> _addPoint({bool presetButton = false}) async {
     setState(() {
       tpl!.points.add(PointItem(
           id: 'p_${DateTime.now().millisecondsSinceEpoch}',
-          name: '新点位', address: 'I0.0', type: PointType.input, writable: false));
+          name: presetButton ? '新按钮' : '新点位',
+          address: presetButton ? 'M0.0' : 'I0.0',
+          type: presetButton ? PointType.output : PointType.input,
+          writable: presetButton));
     });
     _editPoint(tpl!.points.length - 1);
+  }
+
+  /// 新增十字按钮（需求 24-2）
+  void _addCross() {
+    setState(() {
+      tpl!.points.add(PointItem(
+          id: 'cx_${DateTime.now().millisecondsSinceEpoch}',
+          name: '十字按钮',
+          address: 'M0.0',
+          type: PointType.output,
+          writable: false,
+          ctrl: 'cross'));
+    });
+  }
+
+  /// 编辑十字按钮：名称 + 四脚地址
+  Future<void> _editCross(PointItem p) async {
+    final nameC = TextEditingController(text: p.name);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: cCard,
+        title: const Text('编辑十字按钮',
+            style: TextStyle(fontSize: 16, color: cText)),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(controller: nameC,
+                style: const TextStyle(fontSize: 14, color: cText),
+                decoration: const InputDecoration(labelText: '名称', labelStyle: TextStyle(color: cDim))),
+            const SizedBox(height: 12),
+            for (final (k, label) in const [
+              ('fwd', '前'), ('back', '后'), ('left', '左'), ('right', '右'),
+            ])
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(children: [
+                  SizedBox(width: 24, child: Text(label,
+                      style: const TextStyle(fontSize: 12, color: cSub))),
+                  Expanded(child: AddressField(
+                    initial: p.dirs[k] ?? '',
+                    type: VarType.boolean,
+                    onChanged: (a) => p.dirs[k] = a,
+                  )),
+                ]),
+              ),
+            const Text('四脚地址请用 M 区 / DB 区（按下写 1，松开写 0）',
+                style: const TextStyle(fontSize: 10, color: cDim)),
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消', style: TextStyle(color: cDim))),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: cAccent, foregroundColor: cAccentText),
+              child: const Text('确定')),
+        ],
+      ),
+    );
+    if (ok == true) {
+      setState(() {
+        if (nameC.text.trim().isNotEmpty) p.name = nameC.text.trim();
+      });
+    }
   }
 }
 
@@ -3805,13 +4834,13 @@ class _AddressFieldState extends State<AddressField> {
     final parts = <Widget>[];
     if (area == VarArea.db) {
       parts.add(_lbl('DB'));
-      parts.add(_num(dbC, 30, (v) => db = v < 1 ? 1 : v));
+      parts.add(_num(dbC, 38, (v) => db = v < 1 ? 1 : v));
       parts.add(_lbl('.DB${tag.isEmpty ? 'X' : tag}'));
-      parts.add(_num(byteC, 36, (v) => byteIdx = v));
+      parts.add(_num(byteC, 46, (v) => byteIdx = v));
     } else {
       parts.add(_lbl(area.letter));
       if (tag.isNotEmpty) parts.add(_lbl(tag));
-      parts.add(_num(byteC, 36, (v) => byteIdx = v));
+      parts.add(_num(byteC, 46, (v) => byteIdx = v));
     }
     if (t.isBit) {
       parts.add(_lbl('.'));
@@ -3835,7 +4864,8 @@ class _AddressFieldState extends State<AddressField> {
         keyboardType: TextInputType.number,
         inputFormatters: [
           FilteringTextInputFormatter.digitsOnly,
-          LengthLimitingTextInputFormatter(3),
+          // 字节地址支持到 4 位（如 I6666.6，需求 22）
+          LengthLimitingTextInputFormatter(4),
         ],
         style: const TextStyle(
             fontSize: 13, color: cData, fontFamily: 'monospace'),
@@ -3918,9 +4948,12 @@ class _CommentFieldState extends State<_CommentField> {
 }
 
 /// 地址 · 类型 · 注释
-String _addrLine(String addr, VarType t, String cmt) {
+String _addrLine(String addr, VarType t, String cmt, {bool showType = false}) {
   final c = cmt.trim();
-  return c.isEmpty ? '$addr · ${t.label}' : '$addr · ${t.label} · $c';
+  // 监控操作界面不显示变量类型（需求 25）；模板 / 编辑界面仍显示
+  return c.isEmpty
+      ? (showType ? '$addr · ${t.label}' : addr)
+      : (showType ? '$addr · ${t.label} · $c' : '$addr · $c');
 }
 
 /// 底部：版本号 + 品牌，同一行

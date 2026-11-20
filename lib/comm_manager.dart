@@ -20,8 +20,8 @@ class DeviceStatus {
   /// 报警位原始值：报警 ID -> 当前位值（与 AlarmItem.triggerHigh 比较得是否报警）
   Map<int, bool> alarmRaw = {};
 
-  /// 报警灯位值（null = 未配置 / 未读到）
-  bool? lampOn;
+  /// 状态灯颜色（'red'/'yellow'/'green'/'gray'；'gray' = 未配置或都为 0 / 未读到）
+  String lampColor = 'gray';
 
   /// 报警采集诊断：本轮扫描的字节段总数 / 其中读不到的段数 / 读不到段的位置描述
   int alarmSegTotal = 0;
@@ -163,7 +163,7 @@ class CommManager {
       // 轮询案例自己的点位：模板删了、改了都不影响通讯
       final points = d.points.where((p) => p.type != PointType.image).toList();
       // 只有「没有任何点位、也没有报警」时才跳过；只配了报警的案例照样要采
-      final hasAlarms = d.alarms.isNotEmpty || d.alarmLamp.trim().isNotEmpty;
+      final hasAlarms = d.alarms.isNotEmpty || d.lampAddrs.isNotEmpty;
       if (points.isEmpty && !hasAlarms) return;
 
       final t0 = DateTime.now();
@@ -200,7 +200,7 @@ class CommManager {
               s.values[pairs[i].$1.id] = r[i];
             }
             // PLC 回「地址不存在」的点位：记住地址，下轮起不再读
-            bad.addAll((c as s7.S7Client).badAddresses);
+            bad.addAll(c.badAddresses);
           }
           if (badNames.isNotEmpty || bad.isNotEmpty) {
             final shown = [...badNames, ...bad].take(3).join('、');
@@ -283,13 +283,13 @@ class CommManager {
     if (c == null) return;
 
     final s = st(d.id);
-    // 收集要读的位：报警灯（key = -1）+ 每条报警（key = 报警 ID）
-    final wanted = <(s7.S7Point, int, bool)>[]; // (地址解析, key, 是否报警灯)
+    // 收集要读的位：状态灯三色（key = -1 红 / -2 黄 / -3 绿）+ 每条报警（key = 报警 ID）
+    final wanted = <(s7.S7Point, int, bool)>[]; // (地址解析, key, 是否状态灯)
     int unparsed = 0; // 无法解析的地址条数
-    if (d.alarmLamp.trim().isNotEmpty) {
-      final p = s7.parseS7Address(d.alarmLamp.trim());
+    for (final (addr, color) in d.lampAddrs) {
+      final p = s7.parseS7Address(addr);
       if (p != null) {
-        wanted.add((p, -1, true));
+        wanted.add((p, color == 'red' ? -1 : (color == 'yellow' ? -2 : -3), true));
       } else {
         unparsed++;
       }
@@ -320,6 +320,7 @@ class CommManager {
 
     int segTotal = 0, segFailed = 0;
     final failedDesc = <String>[];
+    final lampVals = <int, bool>{}; // 状态灯本轮读数（key: -1红/-2黄/-3绿）
     for (final items in groups.values) {
       items.sort((x, y) => x.$1.byteIndex.compareTo(y.$1.byteIndex));
       // 合并连续字节段：间隔 ≤ 4 字节算连续，每段最多 120 字节
@@ -353,7 +354,7 @@ class CommManager {
             final b = bytes[p.byteIndex - startByte];
             final v = decodeBit([b], p.bitIndex);
             if (isLamp) {
-              s.lampOn = v;
+              lampVals[key] = v;
             } else {
               s.alarmRaw[key] = v;
             }
@@ -371,6 +372,12 @@ class CommManager {
     s.alarmSegTotal = segTotal;
     s.alarmSegFailed = segFailed;
     s.alarmFailDesc = failedDesc.toSet().take(3).join('、');
+    // 状态灯颜色：红灯优先，其次黄、绿；都没亮或没读到为灰
+    s.lampColor = lampVals[-1] == true
+        ? 'red'
+        : (lampVals[-2] == true
+            ? 'yellow'
+            : (lampVals[-3] == true ? 'green' : 'gray'));
   }
 
   /// 段位置的人类可读描述（如 DB91 / M 区）
@@ -432,6 +439,51 @@ class CommManager {
   }
 
   // ------------------------------------------------------------ 写数值
+
+  /// 按原始地址写位（十字按钮四脚等非点位地址的写入）。[label] 用于报错提示。
+  Future<bool> writeBitAt(Device d, String address, bool value,
+      {String label = ''}) async {
+    final who = label.isEmpty ? address : '「$label」($address)';
+    // I / Q 区只读双保险
+    if (isForcedReadOnlyAddress(address)) {
+      st(d.id).writeError = '$who 在 I / Q 区，只读，不允许写入';
+      _notify(d.id);
+      return false;
+    }
+    final c = _clients[d.id];
+    if (c == null) {
+      st(d.id).writeError = '未连接：无法写入';
+      _notify(d.id);
+      return false;
+    }
+    try {
+      bool ok;
+      if (_isModbus(d)) {
+        final mp = mb.parseModbusAddress(address);
+        if (mp == null || mp.isInput) {
+          st(d.id).writeError = '地址「$address」不可写（输入点不能写）';
+          _notify(d.id);
+          return false;
+        }
+        ok = await (c as mb.ModbusTcpClient).writeBit(mp.addr, value);
+      } else {
+        final sp = s7.parseS7Address(address);
+        if (sp == null) {
+          st(d.id).writeError = '地址「$address」无法解析';
+          _notify(d.id);
+          return false;
+        }
+        ok = await (c as s7.S7Client).writeBit(sp, value);
+      }
+      st(d.id).writeError = ok ? null : '写入 $address 失败';
+      _notify(d.id);
+      return ok;
+    } catch (e) {
+      st(d.id).writeError = _describe(e);
+      _notify(d.id);
+      return false;
+    }
+  }
 
   /// 写入任意类型的值：BOOL 走位写，数值类型走字节写
   Future<bool> writeValue(Device d, PointItem p, Object value) async {

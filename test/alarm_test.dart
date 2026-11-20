@@ -79,23 +79,35 @@ void main() {
   });
 
   group('Device 报警字段序列化', () {
-    test('toJson / fromJson 往返保留报警灯与报警表', () {
+    test('toJson / fromJson 往返保留状态灯与报警表', () {
       final d = Device(id: 'dev1', name: '堆垛机', templateId: 'tpl_x')
-        ..alarmLamp = 'M10.0'
+        ..lampRed = 'M10.0'
+        ..lampYellow = 'M10.1'
+        ..lampGreen = 'M10.2'
         ..alarms = [
           AlarmItem(id: 1, priority: 0, address: 'DB91.DBX3.0',
               triggerHigh: true, text: '通信超时'),
         ];
       final b = Device.fromJson(d.toJson());
-      expect(b.alarmLamp, 'M10.0');
+      expect(b.lampRed, 'M10.0');
+      expect(b.lampYellow, 'M10.1');
+      expect(b.lampGreen, 'M10.2');
       expect(b.alarms.length, 1);
       expect(b.alarms.first.text, '通信超时');
+    });
+
+    test('旧存档的 alarmLamp 迁移为状态灯红灯地址', () {
+      final b = Device.fromJson({
+        'id': 'x', 'name': 'n', 'protocol': 's7', 'alarmLamp': 'M20.0',
+      });
+      expect(b.lampRed, 'M20.0');
+      expect(b.alarms, isEmpty);
     });
 
     test('旧存档没有报警字段也能读', () {
       final d = Device.fromJson({'id': 'x', 'name': 'n', 'protocol': 's7'});
       expect(d.alarms, isEmpty);
-      expect(d.alarmLamp, '');
+      expect(d.lampRed, '');
     });
   });
 

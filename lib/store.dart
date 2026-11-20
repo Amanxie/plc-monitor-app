@@ -107,10 +107,21 @@ class AppStore {
       for (final p in d.points) {
         if (p.enforceReadOnlyRule()) changed = true;
       }
+      // 1.9.0 起监控页改画布布局：老点位没有位置尺寸的，自动排布补齐
+      if (d.points.any((p) =>
+          p.type != PointType.image && (p.w <= 0 || p.x < 0 || p.y < 0))) {
+        normalizeLayout(d.points);
+        changed = true;
+      }
     }
     for (final t in templates) {
       for (final p in t.points) {
         if (p.enforceReadOnlyRule()) changed = true;
+      }
+      if (t.points.any((p) =>
+          p.type != PointType.image && (p.w <= 0 || p.x < 0 || p.y < 0))) {
+        normalizeLayout(t.points);
+        changed = true;
       }
     }
     if (!changed) return;

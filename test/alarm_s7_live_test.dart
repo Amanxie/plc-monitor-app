@@ -127,7 +127,7 @@ void main() {
     expect(s.alarmRaw[2], isFalse);
     expect(s.alarmRaw[3], isFalse);
     expect(s.alarmRaw[4], isTrue); // 位=1，触发值 0 → 不报警
-    expect(s.lampOn, isFalse);
+    expect(s.lampColor, isNot('red'));
 
     // 触发 1 号和 3 号（跨两个字节块），并点亮报警灯
     await poke('DB91', 3, 0, 1);
@@ -137,7 +137,7 @@ void main() {
     expect(s.alarmRaw[1], isTrue);
     expect(s.alarmRaw[2], isFalse, reason: '同一 DB90 块里未点的位不应被带起来');
     expect(s.alarmRaw[3], isTrue);
-    expect(s.lampOn, isTrue);
+    expect(s.lampColor, 'red');
 
     await cm.disconnect(d);
 

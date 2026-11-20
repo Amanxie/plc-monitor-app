@@ -231,6 +231,15 @@ class PointItem {
   /// 变量注释（对应博图变量表里的注释列）。留空时自动取符号表里同地址的注释。
   String comment;
 
+  /// 控件种类：'' = 按性质自动（状态显示/输入域/点动按钮），'cross' = 十字按钮
+  String ctrl;
+  /// 十字按钮四脚地址（前/后/左/右），仅 ctrl == 'cross' 时使用
+  Map<String, String> dirs;
+
+  /// 监控操作区域里的位置与尺寸（设计坐标，画布宽 360）。
+  /// x/y < 0 表示未定位（迁移时自动排布）；w/h <= 0 表示用默认尺寸。
+  double x, y, w, h;
+
   PointItem({
     required this.id,
     required this.name,
@@ -240,7 +249,15 @@ class PointItem {
     this.visible = true,
     this.writable = true,
     this.comment = '',
-  });
+    this.ctrl = '',
+    Map<String, String>? dirs,
+    this.x = -1,
+    this.y = -1,
+    this.w = 0,
+    this.h = 0,
+  }) : dirs = dirs ?? {};
+
+  bool get isCross => ctrl == 'cross';
 
   /// 地址在 I / Q 区 —— 只读，写不了
   bool get ioLocked => isForcedReadOnlyAddress(address);
@@ -280,6 +297,9 @@ class PointItem {
         visible: visible,
         writable: writable,
         comment: comment,
+        ctrl: ctrl,
+        dirs: Map.of(dirs),
+        x: x, y: y, w: w, h: h,
       );
 
   Map<String, dynamic> toJson() => {
@@ -291,6 +311,9 @@ class PointItem {
         'visible': visible,
         'writable': writable,
         'comment': comment,
+        if (ctrl.isNotEmpty) 'ctrl': ctrl,
+        if (dirs.isNotEmpty) 'dirs': dirs,
+        'x': x, 'y': y, 'w': w, 'h': h,
       };
 
   factory PointItem.fromJson(Map<String, dynamic> j) => PointItem(
@@ -307,6 +330,13 @@ class PointItem {
         // 旧存档默认按「输入域」处理，保持 1.7.x 的既有行为不变
         writable: (j['writable'] as bool?) ?? true,
         comment: (j['comment'] as String?) ?? '',
+        ctrl: (j['ctrl'] as String?) ?? '',
+        dirs: ((j['dirs'] as Map?) ?? {})
+            .map((k, v) => MapEntry(k.toString(), v.toString())),
+        x: (j['x'] as num?)?.toDouble() ?? -1,
+        y: (j['y'] as num?)?.toDouble() ?? -1,
+        w: (j['w'] as num?)?.toDouble() ?? 0,
+        h: (j['h'] as num?)?.toDouble() ?? 0,
       );
 }
 
@@ -495,10 +525,22 @@ class Device {
   List<PointItem> points;
   /// 案例自己的报警表（从报警记录表导入，随案例保存）
   List<AlarmItem> alarms;
-  /// 报警灯地址（BOOL，值为 1 亮红灯、0 亮绿色；空 = 不显示报警灯）
+  /// 状态灯三色地址（BOOL，值为 1 该颜色亮；都为 0 或未配置为灰）。
+  /// 旧版 alarmLamp（1红/0绿）迁移到红灯地址。
+  String lampRed = '';
+  String lampYellow = '';
+  String lampGreen = '';
+  /// 1.9.0 之前的报警灯地址，迁移用
   String alarmLamp = '';
   /// 案例自己的背景图（从模板带过来，之后独立）
   String? imagePath;
+
+  /// 状态灯的有效地址列表（非空地址 → 颜色名）
+  List<(String, String)> get lampAddrs => [
+        if (lampRed.trim().isNotEmpty) (lampRed.trim(), 'red'),
+        if (lampYellow.trim().isNotEmpty) (lampYellow.trim(), 'yellow'),
+        if (lampGreen.trim().isNotEmpty) (lampGreen.trim(), 'green'),
+      ];
 
   /// 1.8.2 及更早版本的「设备地址覆盖表」，只在迁移时用一次
   Map<String, String> legacyAddresses = {};
@@ -516,10 +558,18 @@ class Device {
     this.slot = 1,
     List<PointItem>? points,
     List<AlarmItem>? alarms,
+    this.lampRed = '',
+    this.lampYellow = '',
+    this.lampGreen = '',
     this.alarmLamp = '',
     this.imagePath,
   }) : points = points ?? [],
-       alarms = alarms ?? [];
+       alarms = alarms ?? [] {
+    // 旧签名 alarmLamp（1红/0绿）：自动迁移为状态灯红灯地址
+    if (lampRed.isEmpty && alarmLamp.trim().isNotEmpty) {
+      lampRed = alarmLamp.trim();
+    }
+  }
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -534,13 +584,14 @@ class Device {
         'slot': slot,
         'points': points.map((p) => p.toJson()).toList(),
         'alarms': alarms.map((a) => a.toJson()).toList(),
-        'alarmLamp': alarmLamp,
+        'lampRed': lampRed,
+        'lampYellow': lampYellow,
+        'lampGreen': lampGreen,
         'imagePath': imagePath,
       };
 
-  factory Device.fromJson(Map<String, dynamic> j) {
-    final rawPts = j['points'];
-    return Device(
+  factory Device.fromJson(Map<String, dynamic> j) =>
+      _migrateLamp(Device(
       id: j['id'] as String,
       name: j['name'] as String,
       templateId: (j['templateId'] as String?) ?? '',
@@ -552,18 +603,66 @@ class Device {
       rack: (j['rack'] as int?) ?? 0,
       slot: (j['slot'] as int?) ?? 1,
       // 1.8.3 之前没有 points 字段，靠 store 里的迁移从模板补齐
-      points: rawPts is List
-          ? rawPts
-              .map((e) => PointItem.fromJson(Map<String, dynamic>.from(e as Map)))
-              .toList()
-          : [],
+      points: (j['points'] as List?)
+          ?.map((e) => PointItem.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList(),
       alarms: (j['alarms'] as List?)
           ?.map((e) => AlarmItem.fromJson(Map<String, dynamic>.from(e as Map)))
           .toList(),
+      lampRed: (j['lampRed'] as String?) ?? '',
+      lampYellow: (j['lampYellow'] as String?) ?? '',
+      lampGreen: (j['lampGreen'] as String?) ?? '',
+      // 旧版只有 alarmLamp（1红/0绿）：迁移为红灯地址，语义一致
       alarmLamp: (j['alarmLamp'] as String?) ?? '',
       imagePath: j['imagePath'] as String?,
     )..legacyAddresses = ((j['addresses'] as Map?) ?? {})
-        .map((k, v) => MapEntry(k.toString(), v.toString()));
+        .map((k, v) => MapEntry(k.toString(), v.toString())));
+}
+
+/// Device 后处理：旧版报警灯地址迁移为状态灯红灯（保持「该地址为 1 亮红」语义）
+Device _migrateLamp(Device d) {
+  if (d.lampRed.isEmpty && d.alarmLamp.trim().isNotEmpty) {
+    d.lampRed = d.alarmLamp.trim();
+  }
+  return d;
+}
+
+// ---------------- 监控操作区域画布（需求 23） ----------------
+
+/// 画布设计宽度。控件 x/y/w/h 都在这个坐标系里；实际渲染按屏宽等比缩放。
+const double kCanvasW = 360;
+
+/// 控件默认尺寸（设计坐标）。w/h <= 0 时用它。
+(double, double) defaultCtrlSize(PointItem p) {
+  if (p.isCross) return (150, 150);
+  if (p.isJogButton) return (170, 52);
+  return (170, 60);
+}
+
+/// 画布总高度：所有控件的最大底边 + 边距
+double canvasHeight(List<PointItem> points) {
+  double bottom = 0;
+  for (final p in points) {
+    if (p.type == PointType.image) continue;
+    bottom = bottom > p.y + p.h ? bottom : p.y + p.h;
+  }
+  return bottom <= 0 ? 120 : bottom + 10;
+}
+
+/// 给未定位的控件自动排布（单列纵排），尺寸 0 的补默认值。
+/// 老存档迁移与画布编辑器进入时都会调用。
+void normalizeLayout(List<PointItem> points) {
+  double y = 10;
+  for (final p in points) {
+    if (p.type == PointType.image) continue;
+    final (dw, dh) = defaultCtrlSize(p);
+    if (p.w <= 0) p.w = dw;
+    if (p.h <= 0) p.h = dh;
+    if (p.x < 0 || p.y < 0) {
+      p.x = 10;
+      p.y = y;
+    }
+    y = p.y + p.h + 8;
   }
 }
 

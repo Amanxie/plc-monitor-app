@@ -142,7 +142,7 @@ void main() {
     await Future<void>.delayed(const Duration(seconds: 20));
     final s = cm.st(d.id);
     expect(s.state, ConnState.connected);
-    expect(s.lampOn, isTrue, reason: 'M 区报警灯段照常采集');
+    expect(s.lampColor, 'red', reason: 'M 区报警灯段照常采集');
     expect(s.alarmRaw[2], isTrue, reason: 'M190.6 好报警位照常采集');
     expect(s.alarmRaw.containsKey(1), isFalse,
         reason: 'DB777 段拉黑后 1 号报警不再有读数');

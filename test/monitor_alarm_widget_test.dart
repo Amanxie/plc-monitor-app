@@ -56,16 +56,17 @@ void main() {
     CommManager.instance.status.clear();
   });
 
-  testWidgets('状态区标题只写「状态显示」，不再有「实时刷新」', (tester) async {
+  testWidgets('监控页画布标题「监控操作区域」+ 状态灯常驻', (tester) async {
     final d = makeDevice();
     final s = CommManager.instance.st(d.id);
     s.state = ConnState.connected;
     s.alarmRaw = {11: false, 3: false, 7: true};
-    s.lampOn = false;
+    s.lampColor = 'gray';
     await pumpMonitor(tester, d);
     await repaint(tester, d);
 
-    expect(find.text('状态显示'), findsOneWidget);
+    expect(find.text('监控操作区域'), findsOneWidget);
+    expect(find.text('状态灯'), findsOneWidget);
     expect(find.textContaining('实时刷新'), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
@@ -76,7 +77,7 @@ void main() {
     s.state = ConnState.connected;
     // 三条都不满足触发条件：11/3 需要 1 但为 0；7 需要 0 但为 1
     s.alarmRaw = {11: false, 3: false, 7: true};
-    s.lampOn = false;
+    s.lampColor = 'gray';
     await pumpMonitor(tester, d);
     await repaint(tester, d);
 
@@ -91,7 +92,7 @@ void main() {
     s.state = ConnState.connected;
     // 11 触发、3 触发、7 不触发（位=1，触发值 0）
     s.alarmRaw = {11: true, 3: true, 7: true};
-    s.lampOn = true;
+    s.lampColor = 'red';
     await pumpMonitor(tester, d);
     await repaint(tester, d);
 
@@ -104,17 +105,17 @@ void main() {
         .widget<Text>(marqueeWith('地面PLC未收到机载PLC心跳'))
         .data!;
     expect(text.indexOf('3　地面PLC'), lessThan(text.indexOf('11　行走测距仪')));
-    // 报警灯标签存在
-    expect(find.text('报警灯'), findsOneWidget);
+    // 状态灯标签存在
+    expect(find.text('状态灯'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('报警灯：位=1 红灯、位=0 绿灯', (tester) async {
+  testWidgets('状态灯：红/黄/绿 地址亮对应颜色，未读到为灰', (tester) async {
     final d = makeDevice();
     final s = CommManager.instance.st(d.id);
     s.state = ConnState.connected;
     s.alarmRaw = {11: false, 3: false, 7: true};
-    s.lampOn = true; // 红灯
+    s.lampColor = 'red';
     await pumpMonitor(tester, d);
     await repaint(tester, d);
 
@@ -126,22 +127,28 @@ void main() {
     }
 
     expect(dotColor(), cRed);
-    s.lampOn = false;
+    s.lampColor = 'yellow';
+    await repaint(tester, d);
+    expect(dotColor(), cAmber);
+    s.lampColor = 'green';
     await repaint(tester, d);
     expect(dotColor(), cGreen);
+    s.lampColor = 'gray';
+    await repaint(tester, d);
+    expect(dotColor(), const Color(0xFF3D464C));
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('未连接时报警行提示不可用、报警灯不亮', (tester) async {
+  testWidgets('未连接时报警行提示不可用、状态灯不亮', (tester) async {
     final d = makeDevice();
     final s = CommManager.instance.st(d.id);
     s.state = ConnState.disconnected;
-    s.lampOn = true; // 即使上次读到 1，未连接也不能亮
+    s.lampColor = 'red'; // 即使上次读到 1，未连接也不能亮
     await pumpMonitor(tester, d);
     await repaint(tester, d);
 
     expect(find.text('未连接，报警状态不可用'), findsOneWidget);
-    // 报警灯在未连接时是灰的，不能亮红灯
+    // 状态灯在未连接时是灰的，不能亮红灯
     final deco = tester
         .widget<Container>(find.byKey(const ValueKey('alarm_lamp_dot')))
         .decoration as BoxDecoration;
@@ -153,6 +160,7 @@ void main() {
   testWidgets('未导入报警表：报警行常驻显示占位提示', (tester) async {
     final d = makeDevice();
     d.alarms.clear();
+    d.lampRed = '';
     d.alarmLamp = '';
     final s = CommManager.instance.st(d.id);
     s.state = ConnState.disconnected;
@@ -161,7 +169,7 @@ void main() {
 
     expect(find.textContaining('未配置报警表'), findsOneWidget);
     expect(find.text('无报警'), findsNothing);
-    // 报警灯常驻：未配置时也是灰点
+    // 状态灯常驻：未配置时也是灰点
     final deco = tester
         .widget<Container>(find.byKey(const ValueKey('alarm_lamp_dot')))
         .decoration as BoxDecoration;
@@ -177,7 +185,7 @@ void main() {
     s.state = ConnState.connected;
     // 只有 11 号触发（7 号需要 0，给 1；3 号需要 1，给 0）
     s.alarmRaw = {11: true, 3: false, 7: true};
-    s.lampOn = false;
+    s.lampColor = 'gray';
     await pumpMonitor(tester, d);
     await repaint(tester, d);
 
@@ -209,7 +217,7 @@ void main() {
     await tester.tap(find.byTooltip('Back'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 350));
-    expect(find.text('状态显示'), findsOneWidget);
+    expect(find.text('监控操作区域'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
