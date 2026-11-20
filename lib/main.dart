@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -828,6 +829,50 @@ class _WizardScreenState extends State<WizardScreen> {
         ]),
       );
     }
+    // 对点案例（需求 28）：点位从 CSV 导入，数量可能上万，不走画布/地址编辑
+    if (selected!.check) {
+      final groups = <String>{};
+      for (final p in selected!.points) {
+        groups.add(p.group.isEmpty ? '未分组' : p.group);
+      }
+      return ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          Row(children: [
+            const Expanded(child: Text('编辑点位地址',
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: cText))),
+            TextButton.icon(
+              style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: const Size(0, 34)),
+              onPressed: _saveAsTemplate,
+              icon: const Icon(Icons.bookmark_add_outlined, size: 15, color: cSub),
+              label: const Text('保存为模板',
+                  style: TextStyle(fontSize: 11.5, color: cSub)),
+            ),
+          ]),
+          const SizedBox(height: 6),
+          Text('${selected!.name} · ${selected!.points.length} 条对点点位 · ${groups.length} 个变量组',
+              style: const TextStyle(fontSize: 12, color: cSub)),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: _box(cCard),
+            child: Text(
+              selected!.points.isEmpty
+                  ? '对点模板还没有点位。先到「模板管理」打开对点模板导入 CSV，'
+                      '再从模板创建案例。\nM 区地址和 F 列 false 的点位会在导入时自动过滤。'
+                  : '对点案例监控页按变量组下拉核对，一次只通讯当前可见区域的点位，'
+                      '点位再多也不影响 PLC。\n需要增删点位请到对点模板重新导入 CSV，'
+                      '然后重建案例（案例点位是模板的副本）。',
+              style: const TextStyle(fontSize: 11.5, color: cSub),
+            ),
+          ),
+          const SizedBox(height: 14),
+          _alarmGroup(),
+        ],
+      );
+    }
     final pts = selected!.points.where((p) => p.type != PointType.image).toList();
     final statusPts = pts.where((p) => p.isStatusOnly).toList();
     final fieldPts = pts.where((p) => p.isInputField).toList();
@@ -1639,6 +1684,7 @@ class _WizardScreenState extends State<WizardScreen> {
     d.alarms = draftAlarms.map((a) => a.clone()).toList();
     d.imagePath = selected!.imagePath;
     d.sourceTemplate = selected!.name;
+    d.check = selected!.check; // 对点案例（需求 28）
     if (editing == null) d.templateId = selected!.id;
     if (editing == null) {
       AppStore.instance.devices.add(d);
@@ -2450,7 +2496,9 @@ class LayoutEditor extends StatefulWidget {
   /// 选中状态由页面级持有：画布滚出视野被 ListView 回收后再滚回来，选中不丢
   final String? selectedId;
   final ValueChanged<String?> onSelect;
-  const LayoutEditor({
+  /// 对点模板专用（需求 28-2）：工具栏「导入 CSV」按钮，预览旁边；null 不显示
+  final VoidCallback? onImportCsv;
+  LayoutEditor({
     super.key,
     required this.points,
     required this.onChanged,
@@ -2460,6 +2508,7 @@ class LayoutEditor extends StatefulWidget {
     required this.onAddCross,
     this.selectedId,
     required this.onSelect,
+    this.onImportCsv,
   });
   @override
   State<LayoutEditor> createState() => _LayoutEditorState();
@@ -2500,6 +2549,25 @@ class _LayoutEditorState extends State<LayoutEditor> {
               ]),
             ),
           ),
+          // 导入 CSV（需求 28-2）：对点模板专用，预览旁边
+          if (widget.onImportCsv != null) ...[
+            const SizedBox(width: 6),
+            InkWell(
+              onTap: widget.onImportCsv,
+              borderRadius: BorderRadius.circular(4),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                    border: Border.all(color: cData),
+                    borderRadius: BorderRadius.circular(4)),
+                child: const Row(children: [
+                  Icon(Icons.upload_file_outlined, size: 13, color: cData),
+                  SizedBox(width: 4),
+                  Text('导入CSV', style: TextStyle(fontSize: 11, color: cData)),
+                ]),
+              ),
+            ),
+          ],
         ]),
         const SizedBox(height: 6),
         Text('点选控件后下方显示属性，只有选中的控件可编辑；拖动可直接移动位置。',
@@ -3045,6 +3113,21 @@ class _MonitorScreenState extends State<MonitorScreen> {
   Template? tpl;
   bool connecting = false;
 
+  // ---------------- 对点模式（需求 28） ----------------
+  /// 当前选中的变量组（'全部' = 不过滤）
+  String checkGroup = '全部';
+  /// 变量组名列表（加载后缓存一次，6 万条不必每次 build 重算）
+  List<String> checkGroups = const [];
+
+  void _buildCheckGroups() {
+    if (d?.check != true) return;
+    final g = <String>{};
+    for (final p in d!.points) {
+      g.add(p.group.isEmpty ? '未分组' : p.group);
+    }
+    checkGroups = g.toList()..sort();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -3065,6 +3148,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
     // 离开监控页（返回设备列表等）：先摘掉监听，再停止该案例的通讯
     _disposed = true;
     CommManager.instance.offChange(widget.deviceId, _listener);
+    CommManager.instance.clearVisiblePoints(widget.deviceId);
     final dd = d;
     if (dd != null) CommManager.instance.disconnect(dd);
     super.dispose();
@@ -3075,6 +3159,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
     d = AppStore.instance.devices.where((x) => x.id == widget.deviceId).firstOrNull;
     // 画面只认案例自己的点位，模板被删被改都不影响这里
     tpl = d == null ? null : AppStore.instance.draftFromDevice(d!);
+    _buildCheckGroups();
     if (mounted) setState(() {});
   }
 
@@ -3114,7 +3199,10 @@ class _MonitorScreenState extends State<MonitorScreen> {
         ],
       ),
       body: SafeArea(
-        child: ListView(
+        // 对点案例（需求 28）：变量组下拉 + 虚拟化列表核对，不走画布
+        child: d!.check
+            ? _checkMonitorBody(s, connected)
+            : ListView(
           padding: const EdgeInsets.all(20),
           children: [
             if (s.message.isNotEmpty &&
@@ -3360,9 +3448,8 @@ class _MonitorScreenState extends State<MonitorScreen> {
     );
   }
 
-  /// 扫描当前网段，找到 S7 设备就直接改地址并重连
-  Future<void> _scanAndApply() async {
-    final prefix = subnetPrefix(d!.ip);
+/// 扫描当前网段，找到 S7 设备就直接改地址并重连
+  Future<void> _scanAndApply() async {    final prefix = subnetPrefix(d!.ip);
     if (prefix.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('当前 IP 格式不对，先手动改成 192.168.0.10 这样的完整地址')));
@@ -3388,6 +3475,272 @@ class _MonitorScreenState extends State<MonitorScreen> {
     await AppStore.instance.saveDevices();
     await CommManager.instance.connect(d!);
     if (mounted) setState(() => connecting = false);
+  }
+
+  // ---------------- 对点监控（需求 28-5：变量组下拉 + 列表核对） ----------------
+
+  Widget _checkMonitorBody(DeviceStatus s, bool connected) {
+    final all = tpl!.points
+        .where((p) => p.visible && p.type != PointType.image)
+        .toList();
+    final pts = checkGroup == '全部'
+        ? all
+        : all
+            .where((p) => (p.group.isEmpty ? '未分组' : p.group) == checkGroup)
+            .toList();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      if (s.message.isNotEmpty &&
+          s.message != '通讯正常' &&
+          s.message != '未连接')
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+          child: Text(s.message, style: const TextStyle(fontSize: 12, color: cAmber)),
+        ),
+      if (!connected)
+        Padding(padding: const EdgeInsets.fromLTRB(20, 12, 20, 0), child: _offlineBanner(s)),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+        child: _alarmRow(s, connected),
+      ),
+      const SizedBox(height: 12),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Row(children: [
+          const Text('监控操作区域',
+              style: TextStyle(fontSize: 11, color: cDim, letterSpacing: 1)),
+          const Spacer(),
+          _lampDot(s),
+        ]),
+      ),
+      const SizedBox(height: 8),
+      // 变量组下拉框（需求 28-5）：点开显示组名，选中只显示该组控件
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+              color: cCard,
+              border: Border.all(color: cLine),
+              borderRadius: BorderRadius.circular(6)),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: checkGroup,
+              isExpanded: true,
+              dropdownColor: cCard,
+              icon: const Icon(Icons.keyboard_arrow_down, size: 18, color: cSub),
+              style: const TextStyle(fontSize: 13, color: cText),
+              items: [
+                dropdownItem('全部', all.length),
+                ...checkGroups.map((g) => dropdownItem(g, null)),
+              ],
+              onChanged: (v) {
+                if (v == null || v == checkGroup) return;
+                setState(() => checkGroup = v);
+              },
+            ),
+          ),
+        ),
+      ),
+      const SizedBox(height: 8),
+      Expanded(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: _CheckPointList(
+            key: ValueKey('check_${checkGroup}_${pts.length}'),
+            points: pts,
+            device: d!,
+            status: s,
+            connected: connected,
+          ),
+        ),
+      ),
+      const SizedBox(height: 8),
+    ]);
+  }
+
+  DropdownMenuItem<String> dropdownItem(String g, int? count) =>
+      DropdownMenuItem<String>(
+        value: g,
+        child: Row(children: [
+          Flexible(child: Text(g, overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13, color: cText))),
+          if (count != null) ...[
+            const SizedBox(width: 6),
+            Text('$count 条', style: const TextStyle(fontSize: 10, color: cDim)),
+          ],
+        ]),
+      );
+}
+
+/// 对点点位列表（需求 28）：60000 条虚拟化渲染（itemExtent 定高），
+/// 只 build 可见行；滑动中暂停通讯，停止 1 秒后把可见区域的点位
+/// 交给 CommManager 打包轮询（需求 28-11/12/13）。
+class _CheckPointList extends StatefulWidget {
+  final List<PointItem> points;
+  final Device device;
+  final DeviceStatus status;
+  final bool connected;
+  const _CheckPointList({
+    super.key,
+    required this.points,
+    required this.device,
+    required this.status,
+    required this.connected,
+  });
+  @override
+  State<_CheckPointList> createState() => _CheckPointListState();
+}
+
+class _CheckPointListState extends State<_CheckPointList> {
+  final ScrollController _ctrl = ScrollController();
+  Timer? _settle;
+  static const double kExtent = 54;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl.addListener(_onScroll);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _reportVisible());
+  }
+
+  @override
+  void didUpdateWidget(covariant _CheckPointList old) {
+    super.didUpdateWidget(old);
+    // 只有点位集合真的变了（切组 / 重新导入）才重新上报；
+    // 轮询值刷新的 setState 不动可见集合（否则会把滑动暂停清掉）
+    if (!identical(old.points, widget.points)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _reportVisible());
+    }
+  }
+
+  @override
+  void dispose() {
+    _settle?.cancel();
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (!_ctrl.hasClients) return;
+    // 滑动开始：通知通讯暂停（需求 28-13）；停 1 秒无新滚动 = 停下（需求 28-12）
+    CommManager.instance.setSliding(widget.device.id);
+    _settle?.cancel();
+    _settle = Timer(const Duration(seconds: 1), _reportVisible);
+  }
+
+  /// 把当前可见区域（含上下各余量）的点位交给轮询
+  void _reportVisible() {
+    if (!mounted) return;
+    final pts = widget.points;
+    if (pts.isEmpty) return;
+    if (!_ctrl.hasClients) {
+      // 列表尚未布局：先报最前面一批
+      CommManager.instance
+          .setVisiblePoints(widget.device.id, pts.take(20).toList());
+      return;
+    }
+    const margin = 6;
+    final n = pts.length;
+    final first =
+        ((_ctrl.offset / kExtent).floor() - margin).clamp(0, n - 1);
+    final last = (((_ctrl.offset + _ctrl.position.viewportDimension) / kExtent)
+                .ceil() +
+            margin)
+        .clamp(0, n - 1);
+    CommManager.instance
+        .setVisiblePoints(widget.device.id, pts.sublist(first, last + 1));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.points.isEmpty) {
+      return Container(
+        alignment: Alignment.center,
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+            color: cCard, border: Border.all(color: cLine),
+            borderRadius: BorderRadius.circular(6)),
+        child: const Text('该变量组没有点位',
+            style: TextStyle(fontSize: 12, color: cDim)),
+      );
+    }
+    return Container(
+      decoration: BoxDecoration(
+          color: cCard,
+          border: Border.all(color: cLine),
+          borderRadius: BorderRadius.circular(6)),
+      child: ListView.builder(
+        controller: _ctrl,
+        itemExtent: kExtent,
+        padding: EdgeInsets.zero,
+        itemCount: widget.points.length,
+        itemBuilder: (_, i) => _row(widget.points[i], i == 0, i == widget.points.length - 1),
+      ),
+    );
+  }
+
+  Widget _row(PointItem p, bool first, bool last) {
+    final s = widget.status;
+    final isBit = p.dataType.isBit;
+    final on = widget.connected && (s.isOn(p.id));
+    final hasVal = widget.connected && s.values[p.id] != null;
+    final val = formatVarValue(p.dataType, s.values[p.id]);
+    final addr = p.address;
+    final bg = isBit
+        ? (widget.connected
+            ? (on ? const Color(0xFF14301F) : cCardDark)
+            : cCardDark)
+        : cCardDark;
+    return Container(
+      height: kExtent,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: bg,
+        border: Border(
+          top: BorderSide(color: first ? Colors.transparent : cLine),
+          bottom: BorderSide(color: last ? Colors.transparent : cLine),
+        ),
+      ),
+      child: Row(children: [
+        if (isBit) ...[
+          Container(
+            width: 9,
+            height: 9,
+            decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: widget.connected
+                    ? (on ? cGreenDot : const Color(0xFF3D464C))
+                    : const Color(0xFF3D464C)),
+          ),
+          const SizedBox(width: 8),
+        ],
+        Expanded(
+          child: Text(p.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontSize: 12.5,
+                  color: isBit && on ? cText : (on ? cText : cSub))),
+        ),
+        const SizedBox(width: 8),
+        Text(addr,
+            style: const TextStyle(
+                fontSize: 10, fontFamily: 'monospace', color: cDim)),
+        const SizedBox(width: 10),
+        ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 40),
+          child: Text(
+            isBit ? '' : (hasVal ? val : '--'),
+            textAlign: TextAlign.right,
+            style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.bold,
+                fontFamily: 'monospace',
+                color: hasVal ? cData : const Color(0xFF4A5359)),
+          ),
+        ),
+      ]),
+    );
   }
 }
 
@@ -3608,7 +3961,7 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
         ],
       ),
       body: SafeArea(
-        child: ListView(
+        child: tpl!.check ? _checkBody() : ListView(
           padding: const EdgeInsets.all(20),
           children: [
             _imageSection(),
@@ -3657,6 +4010,113 @@ class _TemplateEditScreenState extends State<TemplateEditScreen> {
         ),
       ),
     );
+  }
+
+  // ---------------- 对点模板编辑（需求 28） ----------------
+
+  /// 对点模板编辑页：CSV 批量导入 + 摘要，不走画布（6 万条控件画布渲染不动）
+  Widget _checkBody() {
+    final pts = tpl!.points;
+    final groups = <String, int>{};
+    for (final p in pts) {
+      final g = p.group.isEmpty ? '未分组' : p.group;
+      groups[g] = (groups[g] ?? 0) + 1;
+    }
+    final gNames = groups.keys.toList()..sort();
+    return ListView(padding: const EdgeInsets.all(20), children: [
+      Row(children: [
+        const Icon(Icons.dashboard_customize, size: 15, color: cSub),
+        const SizedBox(width: 6),
+        const Text('对点点位', style: TextStyle(fontSize: 12.5, color: cText,
+            fontWeight: FontWeight.w600)),
+        const Spacer(),
+        // 导入文件按钮（需求 28-2）：与普通模板的预览按钮同位置
+        InkWell(
+          onTap: _importCheckCsv,
+          borderRadius: BorderRadius.circular(4),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+                border: Border.all(color: cData),
+                borderRadius: BorderRadius.circular(4)),
+            child: Row(children: [
+              Icon(Icons.upload_file_outlined, size: 13, color: cData),
+              SizedBox(width: 4),
+              Text(pts.isEmpty ? '导入文件' : '重新导入', style: TextStyle(fontSize: 11, color: cData)),
+            ]),
+          ),
+        ),
+      ]),
+      const SizedBox(height: 10),
+      Container(
+        padding: const EdgeInsets.all(12),
+        decoration: _box(cCard),
+        child: pts.isEmpty
+            ? const Text('还没有点位。点右上「导入文件」选择 CSV：\n'
+                'A列 变量名称 · B列 变量组 · C列 类型(BOOL/BYTE/WORD/DWORD) · '
+                'D列 变量地址 · F列 是否可读(false 过滤)。\nM 区地址自动过滤，最多 60000 条。',
+                style: TextStyle(fontSize: 11, color: cSub))
+            : Text('已导入 ${pts.length} 条点位 · ${groups.length} 个变量组\n'
+                '建好设备后，监控页会按变量组下拉核对，只与当前可见区域通讯。',
+                style: const TextStyle(fontSize: 11, color: cSub)),
+      ),
+      if (groups.isNotEmpty) ...[
+        const SizedBox(height: 12),
+        const Text('变量组', style: TextStyle(fontSize: 11, color: cDim, letterSpacing: 1)),
+        const SizedBox(height: 8),
+        ...gNames.map((g) => Container(
+              margin: const EdgeInsets.only(bottom: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: _box(const Color(0xFF161A1D),
+                  borderColor: const Color(0xFF333B40)),
+              child: Row(children: [
+                const Icon(Icons.folder_outlined, size: 14, color: cSub),
+                const SizedBox(width: 8),
+                Expanded(child: Text(g, style: const TextStyle(fontSize: 12.5, color: cText))),
+                Text('${groups[g]} 条', style: const TextStyle(fontSize: 11, color: cDim)),
+              ]),
+            )),
+      ],
+      const SizedBox(height: 12),
+      Container(
+        padding: const EdgeInsets.all(12),
+        decoration: _box(const Color(0xFF171B1E),
+            borderColor: const Color(0xFF262C30)),
+        child: const Text('对点点位默认全部是状态显示（只读）。\n'
+            '通讯只读监控页当前可见的控件，滑动时不通讯，停下 1 秒后恢复，'
+            '点位再多也不会拖垮 PLC。',
+            style: TextStyle(fontSize: 10.5, color: cSub)),
+      ),
+    ]);
+  }
+
+  /// 选文件导入对点 CSV（需求 28-3）
+  void _toast(String msg) => ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg, style: const TextStyle(fontSize: 12)),
+          backgroundColor: cCard, duration: const Duration(seconds: 3)));
+
+  Future<void> _importCheckCsv() async {
+    try {
+      final f = await ConfigFileIo.pick(mime: 'text/*');
+      if (f == null) return;
+      final lower = f.name.toLowerCase();
+      if (lower.endsWith('.xls') || lower.endsWith('.xlsx')) {
+        _toast('Excel 的 .xls/.xlsx 是二进制读不了，请另存为「CSV UTF-8」再导入');
+        return;
+      }
+      final (parsed, notes) = parseCheckCsv(f.content);
+      if (!mounted) return;
+      if (parsed.isEmpty) {
+        _toast(notes.isEmpty ? '没有解析到任何对点点位' : notes.first);
+        return;
+      }
+      setState(() => tpl!.points = parsed);
+      final extra = notes.isEmpty ? '' : '；${notes.join('，')}';
+      await AppStore.instance.saveTemplates();
+      _toast('已导入 ${parsed.length} 条点位$extra');
+    } catch (e) {
+      _toast('选文件失败：$e');
+    }
   }
 
   Widget _imageSection() {

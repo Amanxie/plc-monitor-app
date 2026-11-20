@@ -1,21 +1,17 @@
 {
-  "version": "1.9.0",
-  "build": 20,
-  "releasedAt": "2026-11-20",
-  "apk": "releases/plc-monitor-v1.9.0.apk",
-  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.9.0/plc-monitor-v1.9.0.apk",
-  "size": 53276877,
-  "sha256": "95d8c43d808c6761a61169959d6b1b659c62fd331d86c98bded6d8abbc9c74b8",
+  "version": "1.9.1",
+  "build": 21,
+  "releasedAt": "2026-11-21",
+  "apk": "releases/plc-monitor-v1.9.1.apk",
+  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.9.1/plc-monitor-v1.9.1.apk",
+  "size": 53539129,
+  "sha256": "236c2909e26e1dda21c08a7288f282d6865709fe304ad2b4dece9d3b5fd84141",
   "force": false,
   "notes": [
-    "新增监控操作区域：设备编辑页画布化布局，控件可拖动定位、拖边改宽高，所见即所得",
-    "新增控件选择：立体按钮控件、十字按钮（前后左右四脚点动）",
-    "属性面板：选中控件（双击或长按0.5秒）后在下方编辑名称/宽高，点空白取消选中",
-    "BOOL状态与输入控件：ON/OFF文字改为背景色（绿=ON 灰=OFF），BOOL输入域点击一下直接翻转写1/0",
-    "地址行仅编辑器显示，预览页与正常监控页不再显示地址和变量类型",
-    "报警灯升级为状态灯：黄/绿/红三色地址均可独立编辑",
-    "IO点位地址扩展到4位（如I6666.6/Q6666.6）",
-    "向导步骤改为顶部向上/向下图标导航",
-    "报警跑马灯降速，恒速滚动"
+    "新增对点核对功能：内置对点模板，模板编辑页可导入 CSV 批量生成点位（A列名/B列组/C列类型/D列地址/F列可读），默认全部状态显示",
+    "对点监控页：变量组下拉过滤（点组名只显示该组），虚拟化列表支撑最多 60000 条",
+    "对点通讯按需打包：只读当前界面可见变量，滑动时不通讯，停止 1 秒后恢复，不拖垮 PLC",
+    "兼容博图导出变量表的 % 前缀地址（%I0.1），已导入的点位无需重新导入；CSV 导入时自动去掉 %",
+    "修复 dev 包版本号显示问题（本次为 1.9.1 build 21）"
   ]
 }

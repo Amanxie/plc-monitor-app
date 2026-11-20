@@ -140,6 +140,30 @@ class CommManager {
     _alarmFailCnt.removeWhere((k, _) => k.startsWith('$deviceId/'));
   }
 
+  // ------------------------------------------------------------ 对点模式（需求 28）
+
+  /// 对点案例当前可见的点位集合（监控页滚动停止 1 秒后更新）
+  final Map<String, List<PointItem>> _visiblePoints = {};
+
+  /// 对点案例是否正在滚动（滚动中不与 PLC 通讯）
+  final Map<String, bool> _sliding = {};
+
+  /// 监控页把当前界面显示的点位交给轮询（需求 28-11/12）
+  void setVisiblePoints(String deviceId, List<PointItem> pts) {
+    _visiblePoints[deviceId] = pts;
+    _sliding[deviceId] = false;
+  }
+
+  /// 滑动开始：暂停通讯（需求 28-13）；停止 1 秒后由监控页调 [setVisiblePoints] 恢复
+  void setSliding(String deviceId) {
+    _sliding[deviceId] = true;
+  }
+
+  void clearVisiblePoints(String deviceId) {
+    _visiblePoints.remove(deviceId);
+    _sliding.remove(deviceId);
+  }
+
   // ------------------------------------------------------------ 轮询
 
   void _startPoll(Device d) {
@@ -160,11 +184,29 @@ class CommManager {
     try {
       final c = _clients[d.id];
       if (c == null) return;
-      // 轮询案例自己的点位：模板删了、改了都不影响通讯
-      final points = d.points.where((p) => p.type != PointType.image).toList();
+      // 对点案例（需求 28）：点位可能多达 6 万条，只把当前界面显示的
+      // 变量打包通讯；滑动中不通讯，等停止 1 秒后由监控页刷新可见集合
+      List<PointItem> points;
+      bool slidingNow = false;
+      if (d.check) {
+        points = _visiblePoints[d.id] ?? const [];
+        slidingNow = _sliding[d.id] == true;
+      } else {
+        // 轮询案例自己的点位：模板删了、改了都不影响通讯
+        points = d.points.where((p) => p.type != PointType.image).toList();
+      }
       // 只有「没有任何点位、也没有报警」时才跳过；只配了报警的案例照样要采
       final hasAlarms = d.alarms.isNotEmpty || d.lampAddrs.isNotEmpty;
-      if (points.isEmpty && !hasAlarms) return;
+      // 滑动中本轮不读（需求 28-13），但轮询循环保持运转，停止后自动恢复
+      if (slidingNow) {
+        _scheduleNext(d);
+        return;
+      }
+      if (points.isEmpty && !hasAlarms) {
+        // 对点案例可见集合还没就绪（等监控页报告），循环继续等
+        if (d.check) _scheduleNext(d);
+        return;
+      }
 
       final t0 = DateTime.now();
       List<Object?> vals = const [];
@@ -233,7 +275,11 @@ class CommManager {
       _polling[d.id] = false;
       _notify(d.id);
     }
-    // 上一次读完成后 400ms 再读，避免请求堆积
+    _scheduleNext(d);
+  }
+
+  /// 上一次读完成后 400ms 再读，避免请求堆积
+  void _scheduleNext(Device d) {
     if (_clients.containsKey(d.id) && st(d.id).state == ConnState.connected) {
       _pollers[d.id]?.cancel();
       _pollers[d.id] = Timer(const Duration(milliseconds: 400), () => _pollOnce(d));

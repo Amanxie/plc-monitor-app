@@ -231,6 +231,9 @@ class PointItem {
   /// 变量注释（对应博图变量表里的注释列）。留空时自动取符号表里同地址的注释。
   String comment;
 
+  /// 变量组（对点模板从 CSV B 列导入）：监控页按下拉框分组过滤显示
+  String group;
+
   /// 控件种类：'' = 按性质自动（状态显示/输入域/点动按钮），'cross' = 十字按钮
   String ctrl;
   /// 十字按钮四脚地址（前/后/左/右），仅 ctrl == 'cross' 时使用
@@ -249,6 +252,7 @@ class PointItem {
     this.visible = true,
     this.writable = true,
     this.comment = '',
+    this.group = '',
     this.ctrl = '',
     Map<String, String>? dirs,
     this.x = -1,
@@ -297,6 +301,7 @@ class PointItem {
         visible: visible,
         writable: writable,
         comment: comment,
+        group: group,
         ctrl: ctrl,
         dirs: Map.of(dirs),
         x: x, y: y, w: w, h: h,
@@ -311,6 +316,7 @@ class PointItem {
         'visible': visible,
         'writable': writable,
         'comment': comment,
+        if (group.isNotEmpty) 'group': group,
         if (ctrl.isNotEmpty) 'ctrl': ctrl,
         if (dirs.isNotEmpty) 'dirs': dirs,
         'x': x, 'y': y, 'w': w, 'h': h,
@@ -330,6 +336,7 @@ class PointItem {
         // 旧存档默认按「输入域」处理，保持 1.7.x 的既有行为不变
         writable: (j['writable'] as bool?) ?? true,
         comment: (j['comment'] as String?) ?? '',
+        group: (j['group'] as String?) ?? '',
         ctrl: (j['ctrl'] as String?) ?? '',
         dirs: ((j['dirs'] as Map?) ?? {})
             .map((k, v) => MapEntry(k.toString(), v.toString())),
@@ -473,6 +480,9 @@ class Template {
   String desc;
   List<PointItem> points;
   String? imagePath; // 背景图片本地路径
+  /// 对点模板（需求 28）：点位从 CSV 批量导入，监控页按变量组列表核对，
+  /// 不走画布布局；通讯只读当前可见区域
+  bool check;
 
   Template({
     required this.id,
@@ -480,6 +490,7 @@ class Template {
     required this.desc,
     required this.points,
     this.imagePath,
+    this.check = false,
   });
 
   Map<String, dynamic> toJson() => {
@@ -488,6 +499,7 @@ class Template {
         'desc': desc,
         'points': points.map((p) => p.toJson()).toList(),
         'imagePath': imagePath,
+        if (check) 'check': true,
       };
 
   factory Template.fromJson(Map<String, dynamic> j) => Template(
@@ -498,6 +510,7 @@ class Template {
             .map((e) => PointItem.fromJson(e as Map<String, dynamic>))
             .toList(),
         imagePath: j['imagePath'] as String?,
+        check: (j['check'] as bool?) ?? false,
       );
 }
 
@@ -534,6 +547,9 @@ class Device {
   String alarmLamp = '';
   /// 案例自己的背景图（从模板带过来，之后独立）
   String? imagePath;
+
+  /// 对点案例（需求 28）：从对点模板创建，监控页走变量组列表核对模式
+  bool check = false;
 
   /// 状态灯的有效地址列表（非空地址 → 颜色名）
   List<(String, String)> get lampAddrs => [
@@ -587,6 +603,7 @@ class Device {
         'lampRed': lampRed,
         'lampYellow': lampYellow,
         'lampGreen': lampGreen,
+        if (check) 'check': true,
         'imagePath': imagePath,
       };
 
@@ -616,7 +633,8 @@ class Device {
       alarmLamp: (j['alarmLamp'] as String?) ?? '',
       imagePath: j['imagePath'] as String?,
     )..legacyAddresses = ((j['addresses'] as Map?) ?? {})
-        .map((k, v) => MapEntry(k.toString(), v.toString())));
+        .map((k, v) => MapEntry(k.toString(), v.toString())))
+      ..check = (j['check'] as bool?) ?? false;
 }
 
 /// Device 后处理：旧版报警灯地址迁移为状态灯红灯（保持「该地址为 1 亮红」语义）
@@ -699,4 +717,117 @@ final builtinTemplates = <Template>[
       PointItem(id: 'p8', name: '纵向反转输出', address: 'Q0.3', type: PointType.input, writable: false),
     ],
   ),
+  Template(
+    id: 'tpl_check',
+    name: '对点模板',
+    desc: '导入 CSV 批量生成点位 · 监控页按变量组核对',
+    points: [],
+    check: true,
+  ),
 ];
+
+// ---------------- 对点模板 CSV 导入（需求 28） ----------------
+
+/// 对点点位上限（需求 28-10）
+const int kCheckPointMax = 60000;
+
+/// 解析对点 CSV：A 列变量名称 / B 列变量组 / C 列变量类型 / D 列变量地址 /
+/// F 列是否可读；其他列忽略。
+///
+/// 过滤规则（需求 28-8/9/7）：
+///   · M 区地址（M0.0 / MW10 …）不产生控件
+///   · F 列为 false 不产生控件（空 / true / 1 视为保留）
+///   · 类型只支持 BOOL / BYTE / WORD / DWORD，其余丢弃
+///   · 超出 [kCheckPointMax] 条截断
+///
+/// 返回 (点位列表, 提示说明列表)。对点控件默认全部是状态显示（需求 28-4）。
+(List<PointItem>, List<String>) parseCheckCsv(String raw) {
+  final points = <PointItem>[];
+  final notes = <String>[];
+  int skipM = 0, skipF = 0, skipType = 0, skipBad = 0;
+  final stamp = DateTime.now().millisecondsSinceEpoch;
+  int seq = 0;
+  final lines = raw.replaceAll('\r', '').split('\n');
+  // D 列必须长得像 PLC 地址（DB1.DBX0.0 / I0.0 / Q0.1 / MW10 …），
+  // 表头行 / 干扰行（如 D 列写「变量地址」）按此静默跳过
+  final addrLike = RegExp(r'^%?(DB\d+\.[A-Z]|DB\d+|[IQM][BWWD]?\d+)',
+      caseSensitive: false);
+  for (int ln = 0; ln < lines.length; ln++) {
+    final line = lines[ln].trim();
+    if (line.isEmpty) continue;
+    final cols = splitCsvLine(line);
+    final name = cols.isNotEmpty ? cols[0].trim() : '';
+    final addr = cols.length > 3 ? cols[3].trim() : '';
+    if (name.isEmpty || !addrLike.hasMatch(addr)) continue; // 表头 / 干扰行
+    final group = cols.length > 1 ? cols[1].trim() : '';
+    final typeRaw = cols.length > 2 ? cols[2].trim().toUpperCase() : 'BOOL';
+    // F 列（第 6 列）：明确为 false 时不产生控件
+    if (cols.length > 5) {
+      final f = cols[5].trim().toLowerCase();
+      if (f == 'false' || f == 'f' || f == '0' || f == '否') { skipF++; continue; }
+    }
+    // 类型映射（需求 28-7）：只支持四种
+    final dtype = switch (typeRaw) {
+      'BOOL' => VarType.boolean,
+      'BYTE' => VarType.byte,
+      'WORD' => VarType.word,
+      'DWORD' => VarType.dword,
+      _ => null,
+    };
+    if (dtype == null) { skipType++; continue; }
+    // M 区地址过滤（需求 28-8）
+    if (addrAreaOf(addr) == 'M') { skipM++; continue; }
+    if (points.length >= kCheckPointMax) {
+      notes.add('点位已达上限 $kCheckPointMax 条，第 ${ln + 1} 行起的多余内容未导入');
+      break;
+    }
+    // 去掉博图导出的 % 前缀（%I0.1 → I0.1），存干净地址，
+    // 监控 / 通讯 / 写入全链路都不用再判 %（s7_client.parseS7Address 也已兼容）
+    final cleanAddr = addr.startsWith('%') ? addr.substring(1) : addr;
+    points.add(PointItem(
+      id: 'ck_${stamp}_${seq++}',
+      name: name,
+      address: cleanAddr,
+      type: PointType.input,
+      dataType: dtype,
+      writable: false, // 需求 28-4：对点默认属性是状态显示
+      group: group.isEmpty ? '未分组' : group,
+    ));
+  }
+  if (skipM > 0) notes.add('M 区地址 $skipM 条已过滤');
+  if (skipF > 0) notes.add('F 列为 false 的 $skipF 条已过滤');
+  if (skipType > 0) notes.add('类型不支持的 $skipType 条已过滤（只支持 BOOL/BYTE/WORD/DWORD）');
+  if (skipBad > 0) notes.add('名称或地址为空的 $skipBad 行已跳过');
+  return (points, notes);
+}
+
+/// 按 CSV 规则切一行：支持双引号包裹（引号内逗号/双引号转义），无引号按逗号切
+List<String> splitCsvLine(String line) {
+  final out = <String>[];
+  final buf = StringBuffer();
+  bool inQuote = false;
+  for (int i = 0; i < line.length; i++) {
+    final c = line[i];
+    if (inQuote) {
+      if (c == '"') {
+        if (i + 1 < line.length && line[i + 1] == '"') { buf.write('"'); i++; }
+        else { inQuote = false; }
+      } else {
+        buf.write(c);
+      }
+    } else if (c == '"') {
+      inQuote = true;
+    } else if (c == ',') {
+      out.add(buf.toString());
+      buf.clear();
+    } else if (c == '\t') {
+      // Excel 直接粘贴是制表符分隔，兼容
+      out.add(buf.toString());
+      buf.clear();
+    } else {
+      buf.write(c);
+    }
+  }
+  out.add(buf.toString());
+  return out;
+}

@@ -82,8 +82,10 @@ int dataLenBytes(int transportSize, int lenField, int needBytes) {
 ///   双字：MD10 ID0  QD0  DB1.DBD0
 /// 尺寸字母只影响语义，实际读取长度由数据类型决定，起始字节一致。
 S7Point? parseS7Address(String addr) {
-  final a = addr.trim().toUpperCase().replaceAll(' ', '');
+  var a = addr.trim().toUpperCase().replaceAll(' ', '');
   if (a.isEmpty) return null;
+  // 博图导出的绝对地址常带 % 前缀（%I0.1 / %DB1.DBX0.0），与编辑器 parseAddrSpec 同样兼容
+  if (a.startsWith('%')) a = a.substring(1);
 
   // DB 区：DB1.DBX0.3 / DB1.DBB0 / DB1.DBW0 / DB1.DBD0
   if (a.startsWith('DB')) {

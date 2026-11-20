@@ -108,8 +108,10 @@ class AppStore {
         if (p.enforceReadOnlyRule()) changed = true;
       }
       // 1.9.0 起监控页改画布布局：老点位没有位置尺寸的，自动排布补齐
-      if (d.points.any((p) =>
-          p.type != PointType.image && (p.w <= 0 || p.x < 0 || p.y < 0))) {
+      // 对点案例（需求 28）走列表渲染，不需要画布布局，6 万条也跳过提速
+      if (!d.check &&
+          d.points.any((p) =>
+              p.type != PointType.image && (p.w <= 0 || p.x < 0 || p.y < 0))) {
         normalizeLayout(d.points);
         changed = true;
       }
@@ -118,8 +120,9 @@ class AppStore {
       for (final p in t.points) {
         if (p.enforceReadOnlyRule()) changed = true;
       }
-      if (t.points.any((p) =>
-          p.type != PointType.image && (p.w <= 0 || p.x < 0 || p.y < 0))) {
+      if (!t.check &&
+          t.points.any((p) =>
+              p.type != PointType.image && (p.w <= 0 || p.x < 0 || p.y < 0))) {
         normalizeLayout(t.points);
         changed = true;
       }
@@ -264,17 +267,9 @@ class AppStore {
         name: name?.trim().isNotEmpty == true ? name!.trim() : '${src.name} 副本',
         desc: src.desc,
         imagePath: src.imagePath,
+        check: src.check,
         points: src.points
-            .map((p) => PointItem(
-                  id: 'p_${stamp}_${p.id}',
-                  name: p.name,
-                  address: p.address,
-                  type: p.type,
-                  dataType: p.dataType,
-                  visible: p.visible,
-                  writable: p.writable,
-                  comment: p.comment,
-                ))
+            .map((p) => p.clone(id: 'p_${stamp}_${p.id}'))
             .toList(),
       );
     } else {
@@ -334,18 +329,8 @@ class AppStore {
       id: src.id,
       name: src.name,
       desc: src.desc,
-      points: src.points
-          .map((p) => PointItem(
-                id: p.id,
-                name: p.name,
-                address: p.address,
-                type: p.type,
-                dataType: p.dataType,
-                visible: p.visible,
-                writable: p.writable,
-                comment: p.comment,
-              ))
-          .toList(),
+      points: src.points.map((p) => p.clone()).toList(),
+      check: src.check,
     );
     if (i >= 0) {
       templates[i] = copy;
@@ -434,6 +419,7 @@ class AppStore {
         desc: t.desc,
         imagePath: t.imagePath,
         points: t.points.map((p) => p.clone()).toList(),
+        check: t.check,
       );
 
   /// 从已建案例生成草稿（编辑案例时用）
@@ -443,6 +429,7 @@ class AppStore {
         desc: '案例点位',
         imagePath: d.imagePath,
         points: d.points.map((p) => p.clone()).toList(),
+        check: d.check,
       );
 
   /// 点位注释：先看点位自己填的，再查符号表映射
