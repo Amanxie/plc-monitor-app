@@ -1,17 +1,15 @@
 {
-  "version": "1.9.1",
-  "build": 21,
-  "releasedAt": "2026-11-21",
-  "apk": "releases/plc-monitor-v1.9.1.apk",
-  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.9.1/plc-monitor-v1.9.1.apk",
-  "size": 53539129,
-  "sha256": "236c2909e26e1dda21c08a7288f282d6865709fe304ad2b4dece9d3b5fd84141",
+  "version": "1.9.2",
+  "build": 22,
+  "releasedAt": "2026-11-22",
+  "apk": "releases/plc-monitor-v1.9.2.apk",
+  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.9.2/plc-monitor-v1.9.2.apk",
+  "size": 53573893,
+  "sha256": "7e389fe960814ce5c2f34d6111ae874575f0ec6188c70343126c2c7172c533d8",
   "force": false,
   "notes": [
-    "新增对点核对功能：内置对点模板，模板编辑页可导入 CSV 批量生成点位（A列名/B列组/C列类型/D列地址/F列可读），默认全部状态显示",
-    "对点监控页：变量组下拉过滤（点组名只显示该组），虚拟化列表支撑最多 60000 条",
-    "对点通讯按需打包：只读当前界面可见变量，滑动时不通讯，停止 1 秒后恢复，不拖垮 PLC",
-    "兼容博图导出变量表的 % 前缀地址（%I0.1），已导入的点位无需重新导入；CSV 导入时自动去掉 %",
-    "修复 dev 包版本号显示问题（本次为 1.9.1 build 21）"
+    "更新改为纯手动：不再自动检查和弹窗，只有在设置页点「检查更新」才会查询和下载",
+    "修复升级后版本号仍显示旧版、重复提示更新的问题：版本号改为启动时从安装包读取",
+    "对点案例的编辑向导里新增「导入 CSV」按钮，可直接替换案例点位，无需回模板重建"
   ]
 }

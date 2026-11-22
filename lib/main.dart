@@ -4,6 +4,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'license.dart';
 import 'models.dart';
 import 'plc_scan.dart';
@@ -13,15 +14,25 @@ import 'comm_manager.dart';
 import 'config_io.dart';
 import 'update.dart';
 
-/// 软件版本（底部展示，同时写入构建号）
-const kAppVersion = '1.9.0';
-const kAppBuild = '20';
+/// 软件版本（启动时从包信息读取，需求 30：与 pubspec 自动同步，杜绝改版忘改常量）
+String kAppVersion = '1.9.2';
+String kAppBuild = '22';
 const kBrand = '谢工爱搞自动化';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await ConfigFileIo.init();
+  await _loadAppVersion();
   runApp(const PlcApp());
+}
+
+/// 读安装包的真实版本号（versionName / versionCode），读不到时沿用上面兜底值
+Future<void> _loadAppVersion() async {
+  try {
+    final info = await PackageInfo.fromPlatform();
+    if (info.version.isNotEmpty) kAppVersion = info.version;
+    if (info.buildNumber.isNotEmpty) kAppBuild = info.buildNumber;
+  } catch (_) {}
 }
 
 // ------- 设计令牌（与设计稿一致） -------
@@ -332,26 +343,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await AppStore.instance.load();
     if (mounted) setState(() {});
     _wireIncoming();
-    _autoCheckUpdate();
-  }
-
-  /// 启动后静默检查一次更新（仅在允许的更新时段内，6 小时内不重复打服务器）
-  Future<void> _autoCheckUpdate() async {
-    try {
-      // 更新时段限制：北京时间 10-12 / 14-16 / 21-23，其余时段一律不查
-      if (!UpdateService.inWindow()) return;
-      if (!await UpdateService.shouldAutoCheck()) return;
-      final res = await UpdateService.check();
-      if (!mounted || !res.hasUpdate) return;
-      final r = res.release!;
-      final current = int.tryParse(kAppBuild) ?? 0;
-      if (r.build <= current) return;
-      if (r.build == await UpdateService.skippedBuild()) return;
-      if (!mounted) return;
-      await openUpdateSheet(context, preset: r, auto: true);
-    } catch (_) {
-      // 自动检查失败不打扰用户（无网络、服务器休眠等）
-    }
+    // 需求 29：不再自动检查 / 自动弹更新，用户在设置页点「检查更新」才查
   }
 
   /// 外部「用本应用打开」配置文件时，弹导入确认（合并 / 覆盖）
@@ -841,6 +833,16 @@ class _WizardScreenState extends State<WizardScreen> {
           Row(children: [
             const Expanded(child: Text('编辑点位地址',
                 style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: cText))),
+            // 需求 31：案例里也能直接导入 CSV 换点位，不必回模板重建
+            TextButton.icon(
+              style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: const Size(0, 34)),
+              onPressed: _importCheckCsv,
+              icon: const Icon(Icons.upload_file_outlined, size: 15, color: cAccent),
+              label: const Text('导入 CSV',
+                  style: TextStyle(fontSize: 11.5, color: cAccent)),
+            ),
             TextButton.icon(
               style: TextButton.styleFrom(
                   padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -860,11 +862,11 @@ class _WizardScreenState extends State<WizardScreen> {
             decoration: _box(cCard),
             child: Text(
               selected!.points.isEmpty
-                  ? '对点模板还没有点位。先到「模板管理」打开对点模板导入 CSV，'
-                      '再从模板创建案例。\nM 区地址和 F 列 false 的点位会在导入时自动过滤。'
+                  ? '还没有对点点位。点右上「导入 CSV」批量导入（A列名/B列组/C列类型/D列地址/F列可读）。\n'
+                      'M 区地址和 F 列 false 的点位会在导入时自动过滤。'
                   : '对点案例监控页按变量组下拉核对，一次只通讯当前可见区域的点位，'
-                      '点位再多也不影响 PLC。\n需要增删点位请到对点模板重新导入 CSV，'
-                      '然后重建案例（案例点位是模板的副本）。',
+                      '点位再多也不影响 PLC。\n点右上「导入 CSV」可直接替换本案例的全部点位（需求 31），'
+                      '保存修改后生效。',
               style: const TextStyle(fontSize: 11.5, color: cSub),
             ),
           ),
@@ -1260,6 +1262,48 @@ class _WizardScreenState extends State<WizardScreen> {
   }
 
   /// 把当前画面上看到的控件与地址另存为一个新模板（原模板不受影响）
+  /// 案例内导入对点 CSV（需求 31）：解析结果直接替换本案例草稿的点位，
+  /// 点「保存修改」后才写入案例。规则与模板导入一致（M 区 / F=false / 类型过滤）
+  Future<void> _importCheckCsv() async {
+    if (selected == null) return;
+    try {
+      final f = await ConfigFileIo.pick(mime: 'text/*');
+      if (f == null) return;
+      final lower = f.name.toLowerCase();
+      if (lower.endsWith('.xls') || lower.endsWith('.xlsx')) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: const Text('Excel 的 .xls/.xlsx 是二进制读不了，请另存为「CSV UTF-8」再导入',
+                style: TextStyle(fontSize: 12)),
+            backgroundColor: cCard, duration: const Duration(seconds: 3)));
+        return;
+      }
+      final (parsed, notes) = parseCheckCsv(f.content);
+      if (!mounted) return;
+      if (parsed.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(notes.isEmpty ? '没有解析到任何对点点位' : notes.first,
+                style: const TextStyle(fontSize: 12)),
+            backgroundColor: cCard, duration: const Duration(seconds: 3)));
+        return;
+      }
+      setState(() {
+        selected!.points = parsed;
+        // 对点案例不走地址编辑器，草稿暂存不用同步
+      });
+      final extra = notes.isEmpty ? '' : '；${notes.join('，')}';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('已导入 ${parsed.length} 条点位（保存修改后生效）$extra',
+              style: const TextStyle(fontSize: 12)),
+          backgroundColor: cCard, duration: const Duration(seconds: 4)));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('选文件失败：$e', style: const TextStyle(fontSize: 12)),
+            backgroundColor: cCard, duration: const Duration(seconds: 3)));
+      }
+    }
+  }
+
   Future<void> _saveAsTemplate() async {
     if (selected == null) return;
     final src = selected!;
@@ -5422,12 +5466,12 @@ class _AppFooter extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.only(top: 8, bottom: 6),
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 6),
       child: Center(
         child: Text(
           '版本$kAppVersion BY $kBrand',
-          style: TextStyle(
+          style: const TextStyle(
               fontSize: 10.5,
               color: Color(0xFF5F6B72),
               letterSpacing: 0.4),
@@ -6076,33 +6120,8 @@ class _SymbolImportScreenState extends State<SymbolImportScreen> {
 // ================== 软件更新 ==================
 
 Future<void> openUpdateSheet(BuildContext context, {ReleaseInfo? preset, bool auto = false}) async {
-  // 更新时段限制：自动检查时段外直接不弹；手动点「检查更新」则明确告知何时可更新
-  if (!UpdateService.inWindow()) {
-    if (auto) return;
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: cCard,
-        title: const Text('当前不在更新时段',
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cText)),
-        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('为避免升级打断现场运行，App 只在以下时段检查与下载更新：',
-              style: TextStyle(fontSize: 12, color: cSub)),
-          const SizedBox(height: 8),
-          Text(UpdateService.windowLabel,
-              style: const TextStyle(fontSize: 12.5, color: cAccent, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 8),
-          Text(UpdateService.nextWindowText(),
-              style: const TextStyle(fontSize: 11.5, color: cDim)),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx),
-              child: const Text('知道了', style: TextStyle(fontSize: 13, color: cAccent))),
-        ],
-      ),
-    );
-    return;
-  }
+  // 需求 29：更新只在用户手动点击时进行，不再有时段拦截——
+  // 自动推送已取消，用户主动点「检查更新」就是明确要更新，任何时间都放行
   return showModalBottomSheet<void>(
     context: context,
     backgroundColor: cCard,
@@ -6262,7 +6281,7 @@ class _UpdateSheetState extends State<_UpdateSheet> {
             const SizedBox(height: 16),
             ..._body(r),
             const SizedBox(height: 14),
-            Text('更新时段：${UpdateService.windowLabel}',
+            Text('更新仅在手动点击「检查更新」时进行，App 不会自动下载或安装',
                 style: const TextStyle(fontSize: 10, color: cDim)),
             const SizedBox(height: 3),
             Text('更新服务：$kUpdateBaseUrl',
@@ -6340,16 +6359,7 @@ class _UpdateSheetState extends State<_UpdateSheet> {
           const SizedBox(height: 12),
           SizedBox(width: double.infinity, child: _primary('立即更新（${r?.sizeText ?? '下载'}）', _download)),
           const SizedBox(height: 6),
-          Row(children: [
-            Expanded(child: _ghost('稍后再说', () => Navigator.of(context).maybePop())),
-            const SizedBox(width: 8),
-            Expanded(
-              child: _ghost('跳过此版本', () async {
-                if (r != null) await UpdateService.skipBuild(r.build);
-                if (mounted) Navigator.of(context).maybePop();
-              }),
-            ),
-          ]),
+          SizedBox(width: double.infinity, child: _ghost('稍后再说', () => Navigator.of(context).maybePop())),
         ];
       case _UpPhase.downloading:
         final pct = (progress * 100).toStringAsFixed(0);
