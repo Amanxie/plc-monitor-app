@@ -58,3 +58,9 @@ server/releases/*.apk
 
 # 本机路径
 android/local.properties
+
+# 本机调试临时文件
+/ui_*.png
+/ui_dump.xml
+/ui_texts.txt
+/clickables.txt

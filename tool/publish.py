@@ -18,6 +18,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -32,6 +33,8 @@ API = "https://api.github.com"
 
 SKIP_DIRS = {".git", "build", ".dart_tool", ".gradle", ".cxx", ".idea", "shots", "__pycache__"}
 SKIP_NAMES = {".packages", ".flutter-plugins", ".flutter-plugins-dependencies", "local.properties"}
+# 本机调试临时文件（截图 / UI dump）绝不进仓库
+SKIP_RE = re.compile(r'^(ui\d*\.png|ui_dump\.xml|ui_texts\.txt|clickables\.txt)$')
 MAX_BLOB = 25 * 1024 * 1024
 
 
@@ -76,7 +79,7 @@ def collect():
     for dirpath, dirnames, filenames in os.walk(ROOT):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for name in filenames:
-            if name in SKIP_NAMES or name.endswith((".jks", ".keystore", ".iml")):
+            if name in SKIP_NAMES or SKIP_RE.match(name) or name.endswith((".jks", ".keystore", ".iml")):
                 continue
             p = Path(dirpath) / name
             rel = p.relative_to(ROOT).as_posix()
