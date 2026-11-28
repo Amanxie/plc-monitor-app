@@ -1,15 +1,15 @@
 {
-  "version": "1.9.2",
-  "build": 22,
-  "releasedAt": "2026-11-22",
-  "apk": "releases/plc-monitor-v1.9.2.apk",
-  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.9.2/plc-monitor-v1.9.2.apk",
-  "size": 53539317,
-  "sha256": "7e389fe960814ce5c2f34d6111ae874575f0ec6188c70343126c2c7172c533d8",
+  "version": "1.9.4",
+  "build": 23,
+  "releasedAt": "2026-11-28",
+  "apk": "releases/plc-monitor-v1.9.4.apk",
+  "apkSource": "https://github.com/Amanxie/plc-monitor-app/releases/download/v1.9.4/plc-monitor-v1.9.4.apk",
+  "size": 53752357,
+  "sha256": "2c1ab961722168b3aa91ae9201c31e0e605dc5e3ef9ddd8b1b988c4c728eee0b",
   "force": false,
   "notes": [
-    "更新改为纯手动：不再自动检查和弹窗，只有在设置页点「检查更新」才会查询和下载",
-    "修复升级后版本号仍显示旧版、重复提示更新的问题：版本号改为启动时从安装包读取",
-    "对点案例的编辑向导里新增「导入 CSV」按钮，可直接替换案例点位，无需回模板重建"
+    "案例列表支持长按拖动排序，顺序自动保存",
+    "监控页状态显示控件点击可在名称与地址之间切换，切换结果退出页面后仍然保持",
+    "版本号 1.9.4 (build 23)"
   ]
 }

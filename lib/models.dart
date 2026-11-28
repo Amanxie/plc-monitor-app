@@ -551,6 +551,10 @@ class Device {
   /// 对点案例（需求 28）：从对点模板创建，监控页走变量组列表核对模式
   bool check = false;
 
+  /// 状态显示控件被点击后「名称 ⇄ 地址」的切换记忆（需求 33）：
+  /// 存被切换成地址显示的点位 id，退出页面 / 重启 App 都保持
+  List<String> addrLabels = [];
+
   /// 状态灯的有效地址列表（非空地址 → 颜色名）
   List<(String, String)> get lampAddrs => [
         if (lampRed.trim().isNotEmpty) (lampRed.trim(), 'red'),
@@ -604,6 +608,7 @@ class Device {
         'lampYellow': lampYellow,
         'lampGreen': lampGreen,
         if (check) 'check': true,
+        if (addrLabels.isNotEmpty) 'addrLabels': addrLabels,
         'imagePath': imagePath,
       };
 
@@ -634,7 +639,9 @@ class Device {
       imagePath: j['imagePath'] as String?,
     )..legacyAddresses = ((j['addresses'] as Map?) ?? {})
         .map((k, v) => MapEntry(k.toString(), v.toString())))
-      ..check = (j['check'] as bool?) ?? false;
+      ..check = (j['check'] as bool?) ?? false
+      ..addrLabels = ((j['addrLabels'] as List?) ?? const [])
+          .map((e) => e.toString()).toList();
 }
 
 /// Device 后处理：旧版报警灯地址迁移为状态灯红灯（保持「该地址为 1 亮红」语义）

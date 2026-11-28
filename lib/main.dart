@@ -427,12 +427,36 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       );
     }
-    return Column(
-      children: devices.map((d) => _buildDeviceCard(d)).toList(),
+    // 需求 32：长按案例卡片拖动排序，顺序保存在案例配置里
+    return ReorderableListView(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.zero,
+      onReorder: (oldI, newI) async {
+        setState(() {
+          if (newI > oldI) newI--;
+          final d = devices.removeAt(oldI);
+          devices.insert(newI, d);
+        });
+        await AppStore.instance.saveDevices();
+      },
+      proxyDecorator: (child, index, animation) => AnimatedBuilder(
+        animation: animation,
+        builder: (_, __) => Material(
+          color: Colors.transparent,
+          elevation: 6,
+          borderRadius: BorderRadius.circular(10),
+          child: child,
+        ),
+      ),
+      children: [
+        for (final d in devices)
+          _buildDeviceCard(d, key: ValueKey(d.id)),
+      ],
     );
   }
 
-  Widget _buildDeviceCard(Device d) {
+  Widget _buildDeviceCard(Device d, {Key? key}) {
     final s = CommManager.instance.st(d.id);
     final (stText, stColor) = switch (s.state) {
       ConnState.connected => ('通讯正常', cGreen),
@@ -443,6 +467,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final pts = d.points.where((p) => p.visible).toList();
     final inputs = pts.where((p) => p.type == PointType.input).toList();
     return Padding(
+      key: key,
       padding: const EdgeInsets.only(bottom: 10),
       child: InkWell(
         onTap: () => _openMonitor(context, d),
@@ -1782,6 +1807,10 @@ class MonitorCanvas extends StatelessWidget {
   final VoidCallback? onLayoutChanged;
   /// 地址行仅编辑器显示（需求 13）：预览页与正常监控页不显示
   final bool showAddr;
+  /// 需求 33：被点击切换成「地址显示」的状态点位 id 集合（监控页传入）
+  final Set<String> addrLabelIds;
+  /// 需求 33：点击状态显示控件时回调（null = 预览/编辑器，不可点）
+  final void Function(PointItem)? onToggleAddrLabel;
 
   const MonitorCanvas({
     super.key,
@@ -1795,6 +1824,8 @@ class MonitorCanvas extends StatelessWidget {
     this.onTapBlank,
     this.onLayoutChanged,
     this.showAddr = false,
+    this.addrLabelIds = const {},
+    this.onToggleAddrLabel,
   });
 
   @override
@@ -1991,7 +2022,9 @@ class MonitorCanvas extends StatelessWidget {
     final bg = isBit
         ? (on ? const Color(0xFF1D4A2F) : const Color(0xFF262D33))
         : cCard;
-    return Container(
+    // 需求 33：状态显示控件点击切换 名称 ⇄ 地址，选择被记在案例上
+    final asAddr = addrLabelIds.contains(p.id);
+    Widget block = Container(
       padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
       decoration: BoxDecoration(
         color: bg,
@@ -2007,9 +2040,10 @@ class MonitorCanvas extends StatelessWidget {
                 decoration: BoxDecoration(shape: BoxShape.circle,
                     color: hasVal ? (on ? cGreenDot : const Color(0xFF3D464C)) : const Color(0xFF3D464C))),
             const SizedBox(width: 6),
-            Expanded(child: Text(p.name,
+            Expanded(child: Text(asAddr ? addr : p.name,
                 maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 12,
+                    fontFamily: asAddr ? 'monospace' : null,
                     color: on ? cText : cSub))),
             if (!isBit) ...[
               const SizedBox(width: 4),
@@ -2021,7 +2055,7 @@ class MonitorCanvas extends StatelessWidget {
                       color: cData)),
             ],
           ]),
-          if (showAddr) ...[
+          if (showAddr && !asAddr) ...[
             const SizedBox(height: 3),
             Text(
                 _addrLine(addr, p.dataType,
@@ -2032,6 +2066,12 @@ class MonitorCanvas extends StatelessWidget {
           ],
         ],
       ),
+    );
+    if (onToggleAddrLabel == null) return block;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => onToggleAddrLabel!(p),
+      child: block,
     );
   }
 }
@@ -3287,6 +3327,14 @@ class _MonitorScreenState extends State<MonitorScreen> {
               device: d!,
               status: s,
               connected: connected,
+              // 需求 33：状态显示控件点击 名称 ⇄ 地址，选择记在案例上，退出页面不丢
+              addrLabelIds: d!.addrLabels.toSet(),
+              onToggleAddrLabel: (p) {
+                setState(() {
+                  if (!d!.addrLabels.remove(p.id)) d!.addrLabels.add(p.id);
+                });
+                AppStore.instance.saveDevices();
+              },
             ),
             const SizedBox(height: 12),
             Container(
